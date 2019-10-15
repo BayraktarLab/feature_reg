@@ -5,14 +5,14 @@ from tifffile import TiffWriter
 from tifffile import TiffFile
 import re
 import os
-
+import argparse
 np.set_printoptions(suppress=True)
 
 
 def alphaNumOrder(string):
     """ Returns all numbers on 5 digits to let sort the string with numeric order.
-   Ex: alphaNumOrder("a6b12.125")  ==> "a00006b00012.00125"
-   """
+ Ex: alphaNumOrder("a6b12.125")  ==> "a00006b00012.00125"
+ """
     return ''.join([format(int(x), '05d') if x.isdigit()
                     else x for x in re.split(r'(\d+)', string)])
 
@@ -107,6 +107,7 @@ def read_images(path, is_dir):
 
 
 def estimate_registration_parameters(image_paths, ref_image_path, scale):
+    print('estimating registration parameters')
     transform_matrices = []
     images = read_images(image_paths, is_dir=False)
 
@@ -126,63 +127,138 @@ def estimate_registration_parameters(image_paths, ref_image_path, scale):
             transform_matrices.append(transform_matrix)
         else:
             transform_matrices.append(reg_feratures(reference_image, images[i], scale))
-    return reference_image, transform_matrices, target_shape
+    return transform_matrices, target_shape
 
 
-def transform_by_plane(input_file_paths, output_path, target_shape, transform_matrices, append, image_id, new_meta, max_planes):
-    TW = TiffWriter(output_path + 'out.tif', bigtiff=True, append=append)
+def generate_new_metadata(image_paths, target_shape):
+    time = []
+    planes = []
+    channels = []
+    metadata_list = []
+    phys_size_x_list = []
+    phys_size_y_list = []
 
-    for i, path in enumerate(input_file_paths):
-        transform_matrix = transform_matrices[i]
-        with TiffFile(path, is_ome=True) as TF:
-            npages = len(TF.pages)
-            image_axes = (TF.series[0].axes)
+    for i in range(0, len(image_paths)):
+        with TiffFile(image_paths[i]) as TF:
+            image_axes = list(TF.series[0].axes)
             image_shape = TF.series[0].shape
-            plane_shape = TF.pages[0].shape
 
-            if 'C' in image_axes:
-                idx = image_axes.index('C')
-                nchannels = image_shape[idx]
-            else:
-                nchannels = 1
-            if 'Z' in image_axes:
-                idx = image_axes.index('Z')
-                nplanes = image_shape[idx]
-            else:
-                nplanes = 1
             if 'T' in image_axes:
                 idx = image_axes.index('T')
-                nplanes = image_shape[idx]
+                time.append(image_shape[idx])
             else:
-                ntimes = 1
-
-            ome_meta = TF.ome_metadata
-
-            ome_meta = re.sub('SizeX="(\d+)"', 'SizeX="' + str(target_shape[-1]) + '"', ome_meta)
-            ome_meta = re.sub('SizeY="(\d+)"', 'SizeY="' + str(target_shape[-2]) + '"', ome_meta)
-            ome_meta.replace('Image ID="Image:0"', 'Image ID="Image:' + str(image_id) + '"')
-
-            if plane_shape == target_shape:
-                    page = 0
-                    for t in range(0, ntimes):
-                        for z in range(0, nplanes):
-                            for c in range(0, nchannels):
-                                image = TF.asarray(key=page)
-                                TW.save(image, photometric='minisblack', description=new_meta)
-                                page += 1
-                            if nplanes < max_planes:
-                                diff = max_planes - nplanes
-                                empty_page = np.zeros_like(image)
-                                for a in range(0, diff):
-                                    TW.save(empty_page, photometric='minisblack', description=new_meta)
+                time.append(1)
+            if 'Z' in image_axes:
+                idx = image_axes.index('Z')
+                planes.append(image_shape[idx])
             else:
+                planes.append(1)
+            if 'C' in image_axes:
+                idx = image_axes.index('C')
+                channels.append(image_shape[idx])
+            else:
+                channels.append(1)
+
+            ome_meta = TF.ome_metadata.replace('\n', '').replace('\r', '')
+            metadata_list.append(ome_meta)
+            phys_size_x_list.extend(re.findall('PhysicalSizeX="(.*?)"', ome_meta))
+            phys_size_y_list.extend(re.findall('PhysicalSizeY="(.*?)"', ome_meta))
+
+    max_time = max(time)
+    max_planes = max(planes)
+    total_channels = sum(channels)
+    max_phys_size_x = max(phys_size_x_list)
+    max_phys_size_y = max(phys_size_y_list)
+
+    sizes = {' SizeX=".*?"': ' SizeX="' + str(target_shape[1]) + '"',
+             ' SizeY=".*?"': ' SizeY="' + str(target_shape[0]) + '"',
+             ' SizeC=".*?"': ' SizeC="' + str(total_channels) + '"',
+             ' SizeZ=".*?"': ' SizeZ="' + str(max_planes) + '"',
+             ' SizeT=".*?"': ' SizeT="' + str(max_time) + '"',
+             ' PhysicalSizeX=".*?"': ' PhysicalSizeX="' + str(max_phys_size_x) + '"',
+             ' PhysicalSizeY=".*?"': ' PhysicalSizeY="' + str(max_phys_size_y) + '"'
+             }
+
+    header_limit = metadata_list[0].find('<Channel ID')
+    header = metadata_list[0][:header_limit]
+
+    for key, value in sizes.items():
+        header = re.sub(key, value, header)
+
+    ncycles = len(image_paths)
+
+    total_channel_meta = ''
+    write_format = '0' + str(len(str(ncycles)) + 1) + 'd'  # e.g. for number 5 format = 02d, result = 05
+    channel_id = 0
+    for i in range(0, ncycles):
+        cycle_name = 'Cycle' + format(i+1, write_format) + ' '
+        channel_names = re.findall('(?<=<Channel).*?Name="(.*?)"', metadata_list[i])
+        channel_ids = re.findall('Channel ID="(.*?)"', metadata_list[i])
+        new_channel_names = [cycle_name + ch for ch in channel_names]
+        channel_meta = re.findall('<Channel.*?<TiffData', metadata_list[i])[0].replace('<TiffData', '')
+
+        for n in range(0, len(new_channel_names)):
+            new_channel_id = 'Channel:0:' + str(channel_id)
+            channel_meta = channel_meta.replace(channel_names[n], new_channel_names[n]).replace(channel_ids[n],
+                                                                                                new_channel_id)
+            channel_id += 1
+        total_channel_meta += channel_meta
+
+    plane_meta = ''
+    IFD = 0
+    for t in range(0, max_time):
+        for c in range(0, total_channels):
+            for z in range(0, max_planes):
+                plane_meta += '<TiffData FirstC="{0}" FirstT="{1}" FirstZ="{2}" IFD="{3}" PlaneCount="1"></TiffData>'.format(
+                    c, t, z, IFD)
+                IFD += 1
+
+    footer = '</Pixels></Image></OME>'
+    result_ome_meta = header + total_channel_meta + plane_meta + footer
+
+    return max_time, max_planes, total_channels, result_ome_meta
+
+
+def transform_by_plane(input_file_paths, output_path, target_shape, transform_matrices):
+    print('transfroming images')
+    max_time, max_planes, max_channels, new_meta = generate_new_metadata(input_file_paths, target_shape)
+    no_transform_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    with TiffWriter(output_path + 'out.tif', bigtiff=True) as TW:
+
+        for i, path in enumerate(input_file_paths):
+            transform_matrix = transform_matrices[i]
+
+            with TiffFile(path, is_ome=True) as TF:
+                image_axes = (TF.series[0].axes)
+                image_shape = TF.series[0].shape
+
+                if 'C' in image_axes:
+                    idx = image_axes.index('C')
+                    nchannels = image_shape[idx]
+                else:
+                    nchannels = 1
+                if 'Z' in image_axes:
+                    idx = image_axes.index('Z')
+                    nplanes = image_shape[idx]
+                else:
+                    nplanes = 1
+                if 'T' in image_axes:
+                    idx = image_axes.index('T')
+                    ntime = image_shape[idx]
+                else:
+                    ntime = 1
+
                 page = 0
-                for t in range(0, ntimes):
+                for t in range(0, ntime):
                     for z in range(0, nplanes):
                         for c in range(0, nchannels):
                             image = TF.asarray(key=page)
-                            image = pad_to_size(target_shape, image)
-                            image = cv.warpAffine(image, transform_matrix, (image.shape[1], image.shape[0]), None)
+
+                            if image.shape != target_shape:
+                                image = pad_to_size(target_shape, image)
+                            if not np.array_equal(transform_matrix, no_transform_matrix):
+                                image = cv.warpAffine(image, transform_matrix, (image.shape[1], image.shape[0]), None)
+
                             TW.save(image, photometric='minisblack', description=new_meta)
                             page += 1
                         if nplanes < max_planes:
@@ -190,57 +266,33 @@ def transform_by_plane(input_file_paths, output_path, target_shape, transform_ma
                             empty_page = np.zeros_like(image)
                             for a in range(0, diff):
                                 TW.save(empty_page, photometric='minisblack', description=new_meta)
-    TW.close()
-
-
-def get_image_data(image_paths):
-    for i in range(0, len(image_paths)):
-        with TiffFile(image_paths[i]) as TF:
-            image_axes = list(TF.series[0].axes)
-            image_shape = TF.series[0].shape
-            ome_meta = TF.ome_metadata
-            len_axes = len(image_axes)
-
-            if 'C' in image_axes:
-                idx = image_axes.index('C')
-                nchannels = image_shape[idx]
-            else:
-                nchannels = 1
-            if 'Z' in image_axes:
-                idx = image_axes.index('Z')
-                nplanes = image_shape[idx]
-            else:
-                nplanes = 1
-            if 'T' in image_axes:
-                idx = image_axes.index('T')
-                nplanes = image_shape[idx]
-            else:
-                ntimes = 1
-
-
-input_dir = '/home/ubuntu/test/1_2/'
-image_path_list = os.listdir(input_dir)
-output_path = '/home/ubuntu/test/modified/'
-with open('/home/ubuntu/Desktop/new_meta.txt','r',encoding='utf-8') as f:
-    new_meta = f.read()
-
-with open('/home/ubuntu/Desktop/new_meta_max.txt','r',encoding='utf-8') as f:
-    new_meta_max = f.read()
-
-transform_by_plane(['/home/ubuntu/test/1_1/maxz_HiPlexCtxLayers_1.tif', '/home/ubuntu/test/2_1/maxz_HiPlexCtxLayers_1.tif'],
-                    output_path, reference_image, transformation_matrices, False, 0, new_meta_max, 1)
-
-
 
 
 def main():
 
-    maxz_input = '/home/ubuntu/test/previews/'
+    parser = argparse.ArgumentParser(description='Feature based image registration')
 
-    imgs = read_images(maxz_input, is_dir=True)
-    reference_image, transform_matrices, target_shape = estimate_registration_parameters(maxz_input, imgs, 0.5)
-    result = register_images(imgs, transformation_matrices)
-    save_registered_images(result, image_info, 'stack', output_path)
+    parser.add_argument('--maxz_images', type=str, nargs='+', required=True,
+                        help='specify, separated by space, paths to maxz images of anchor channels,\n'
+                             ' you want to use for estimating registration parameters.\n'
+                             ' They should also include reference image.')
+    parser.add_argument('--maxz_ref_image', type=str, required=True,
+                        help='specify path to reference maxz image (i.e. the one that will be used as reference for alligning all other images)')
+    parser.add_argument('--zstack_images', type=str, nargs='+', required=True,
+                        help='specify, separated by space, paths to z-stacked images you want to regsiter.\n'
+                             'They should be in the same order as images specified in --maxz_images argument')
+    parser.add_argument('--out_dir', type=str, required=True,
+                        help='directory to output registered image')
+
+    args = parser.parse_args()
+    maxz_images = args.maxz_images
+    maxz_ref_image = args.maxz_ref_image
+    zstack_images = args.zstack_images
+    out_dir = args.out_dir
+
+    transform_matrices, target_shape = estimate_registration_parameters(maxz_images, maxz_ref_image, 0.5)
+
+    transform_by_plane(zstack_images, out_dir, target_shape, transform_matrices)
 
 
 if __name__ == '__main__':
