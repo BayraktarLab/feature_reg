@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import cv2 as cv
 import tifffile as tif
 from tifffile import TiffWriter
@@ -220,7 +221,7 @@ def generate_new_metadata(image_paths, target_shape):
 
 
 def transform_by_plane(input_file_paths, output_path, target_shape, transform_matrices):
-    print('transfroming images')
+    print('transforming images')
     max_time, max_planes, max_channels, new_meta = generate_new_metadata(input_file_paths, target_shape)
     no_transform_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
     with TiffWriter(output_path + 'out.tif', bigtiff=True) as TW:
@@ -229,7 +230,7 @@ def transform_by_plane(input_file_paths, output_path, target_shape, transform_ma
             transform_matrix = transform_matrices[i]
 
             with TiffFile(path, is_ome=True) as TF:
-                image_axes = (TF.series[0].axes)
+                image_axes = list(TF.series[0].axes)
                 image_shape = TF.series[0].shape
 
                 if 'C' in image_axes:
@@ -273,26 +274,51 @@ def main():
     parser = argparse.ArgumentParser(description='Feature based image registration')
 
     parser.add_argument('--maxz_images', type=str, nargs='+', required=True,
-                        help='specify, separated by space, paths to maxz images of anchor channels,\n'
+                        help='specify, separated by space, paths to maxz images of anchor channels\n'
                              ' you want to use for estimating registration parameters.\n'
                              ' They should also include reference image.')
     parser.add_argument('--maxz_ref_image', type=str, required=True,
-                        help='specify path to reference maxz image (i.e. the one that will be used as reference for alligning all other images)')
-    parser.add_argument('--zstack_images', type=str, nargs='+', required=True,
-                        help='specify, separated by space, paths to z-stacked images you want to regsiter.\n'
-                             'They should be in the same order as images specified in --maxz_images argument')
+                        help='specify path to reference maxz image, the one that will be used as reference for aligning all other images.')
+    parser.add_argument('--register_images', type=str, nargs='+', default='none',
+                        help='specify, separated by space, paths to z-stacked images you want to register.\n'
+                             'They should be in the same order as images specified in --maxz_images argument.'
+                             'If not specified, --maxz_images will be used.')
     parser.add_argument('--out_dir', type=str, required=True,
-                        help='directory to output registered image')
+                        help='directory to output registered image.')
+    parser.add_argument('--scale', type=str, default=0.5,
+                        help='scale of the images during registration. Default value is 0.5. '
+                             'The lower the value the smaller the scale.')
 
     args = parser.parse_args()
     maxz_images = args.maxz_images
     maxz_ref_image = args.maxz_ref_image
-    zstack_images = args.zstack_images
+    imgs_to_register = args.register_images
     out_dir = args.out_dir
+    scale = args.scale
 
-    transform_matrices, target_shape = estimate_registration_parameters(maxz_images, maxz_ref_image, 0.5)
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir)
+    if not out_dir.endswith('/'):
+        out_dir = out_dir + '/'
 
-    transform_by_plane(zstack_images, out_dir, target_shape, transform_matrices)
+    transform_matrices, target_shape = estimate_registration_parameters(maxz_images, maxz_ref_image, scale)
+
+    if imgs_to_register == 'none':
+        imgs_to_register = maxz_images
+
+    transform_by_plane(imgs_to_register, out_dir, target_shape, transform_matrices)
+
+    transform_matrices_flat = [M.flatten() for M in transform_matrices]
+    transform_table = pd.DataFrame(transform_matrices_flat)
+    for i in transform_table.index:
+        transform_table.loc[i, 'path'] = imgs_to_register[i]
+    cols = transform_table.columns.to_list()
+    cols = cols[-1:] + cols[:-1]
+    transform_table = transform_table[cols]
+    try:
+        transform_table.to_csv(out_dir + 'registration_parameters.csv', index=False)
+    except PermissionError:
+        transform_table.to_csv(out_dir + 'registration_parameters_1.csv', index=False)
 
 
 if __name__ == '__main__':
