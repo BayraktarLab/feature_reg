@@ -40,6 +40,12 @@ def pad_to_size(target_shape, img):
     return cv.copyMakeBorder(img, top, bottom, left, right, cv.BORDER_CONSTANT, None, 0)
 
 
+def pad_to_size2(target_shape, img):
+    left, right = calculate_padding_size(target_shape[1], img.shape[1])
+    top, bottom = calculate_padding_size(target_shape[0], img.shape[0])
+    return cv.copyMakeBorder(img, top, bottom, left, right, cv.BORDER_CONSTANT, None, 0), (left, right, top, bottom)
+
+
 def rescale_translation_coordinates(trans_matrix, scale):
     """ Does rescaling of translation coordinates x and y """
     x_coord = trans_matrix[0][2] / scale
@@ -51,7 +57,7 @@ def rescale_translation_coordinates(trans_matrix, scale):
     return new_translation_matrix
 
 
-def reg_feratures(left, right, scale):
+def reg_features(left, right, scale):
     # convert images to uint8, so detector can use them
     img1_8b = cv.normalize(left, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
     img2_8b = cv.normalize(right, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
@@ -116,9 +122,10 @@ def estimate_registration_parameters(image_paths, ref_image_path, scale):
     max_size_x = max([img.shape[1] for img in images])
     max_size_y = max([img.shape[0] for img in images])
     target_shape = (max_size_y, max_size_x)
-
+    padding = []
     for i in range(0, len(images)):
-        images[i] = pad_to_size((max_size_y, max_size_x), images[i])
+        images[i], pad = pad_to_size2((max_size_y, max_size_x), images[i])
+        padding.append(pad)
 
     reference_image = images[ref_img_id]
 
@@ -127,8 +134,8 @@ def estimate_registration_parameters(image_paths, ref_image_path, scale):
             transform_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
             transform_matrices.append(transform_matrix)
         else:
-            transform_matrices.append(reg_feratures(reference_image, images[i], scale))
-    return transform_matrices, target_shape
+            transform_matrices.append(reg_features(reference_image, images[i], scale))
+    return transform_matrices, target_shape, padding
 
 
 def generate_new_metadata(image_paths, target_shape):
@@ -285,6 +292,10 @@ def main():
                              'If not specified, --maxz_images will be used.')
     parser.add_argument('--out_dir', type=str, required=True,
                         help='directory to output registered image.')
+    parser.add_argument('--estimate_only', action='store_true',
+                        help='add this flag if you want to get only registration parameters and do not want to process images.')
+    parser.add_argument('--load_params', type=str, default='none',
+                        help='specify path to csv file with registration parameters')
     parser.add_argument('--scale', type=str, default=0.5,
                         help='scale of the images during registration. Default value is 0.5. '
                              'The lower the value the smaller the scale.')
@@ -294,6 +305,8 @@ def main():
     maxz_ref_image = args.maxz_ref_image
     imgs_to_register = args.register_images
     out_dir = args.out_dir
+    estimate_only = args.estimate_only
+    load_params = args.load_params
     scale = args.scale
 
     if not os.path.exists(out_dir):
@@ -301,12 +314,25 @@ def main():
     if not out_dir.endswith('/'):
         out_dir = out_dir + '/'
 
-    transform_matrices, target_shape = estimate_registration_parameters(maxz_images, maxz_ref_image, scale)
+    if load_params == 'none':
+        transform_matrices, target_shape, padding = estimate_registration_parameters(maxz_images, maxz_ref_image, scale)
+    else:
+        reg_param = pd.read_csv(load_params)
+        target_shape = (reg_param.loc[0, 'height'], reg_param.loc[0, 'width'])
+
+        transform_matrices = []
+        padding = []
+        for i in reg_param.index:
+            matrix = reg_param.loc[i, ['0', '1', '2', '3', '4', '5']].to_numpy().reshape(2, 3).astype(np.float32)
+            pad = reg_param.loc[i, ['left', 'right', 'top', 'bottom']].to_list()
+            transform_matrices.append(matrix)
+            padding.append(pad)
 
     if imgs_to_register == 'none':
         imgs_to_register = maxz_images
 
-    transform_by_plane(imgs_to_register, out_dir, target_shape, transform_matrices)
+    if not estimate_only:
+        transform_by_plane(imgs_to_register, out_dir, target_shape, transform_matrices)
 
     transform_matrices_flat = [M.flatten() for M in transform_matrices]
     transform_table = pd.DataFrame(transform_matrices_flat)
@@ -315,6 +341,13 @@ def main():
     cols = transform_table.columns.to_list()
     cols = cols[-1:] + cols[:-1]
     transform_table = transform_table[cols]
+    for i in range(0, len(padding)):
+        transform_table.loc[i, 'left'] = padding[i][0]
+        transform_table.loc[i, 'right'] = padding[i][1]
+        transform_table.loc[i, 'top'] = padding[i][2]
+        transform_table.loc[i, 'bottom'] = padding[i][3]
+        transform_table.loc[i, 'width'] = target_shape[1]
+        transform_table.loc[i, 'height'] = target_shape[0]
     try:
         transform_table.to_csv(out_dir + 'registration_parameters.csv', index=False)
     except PermissionError:

@@ -14,6 +14,11 @@ They should be in the same order as images specified in `--maxz_images` argument
 
 `**--out_dir**`     directory to output registered image
 
+`**--estimate_only**` add this flag if you want to get only registration parameters and do not want to process images
+
+`**--load_params**`  specify path to csv file that store registration parameters
+
+
 ## Example usage
 
 `python reg.py --maxz_images "/path/to/image1/img1.tif" "/path/to/image2/img2.tif" --maxz_ref_image "/path/to/image2/img2.tif" --register_images "/path/to/image1/img1_zstack.tif" "/path/to/image2/img2_zstack.tif" --out_dir "/path/to/output/"`
