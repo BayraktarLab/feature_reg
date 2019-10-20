@@ -1,6 +1,6 @@
 # Feature based image registrator
 
-Uses Fast feature finder and Daisy feature descriptor. Images must have OME-TIFF XML in their description.
+The programs uses `Fast` feature finder and `Daisy` feature descriptor for registration. It can align images of different size by padding them with 0 values. The image registrator can work with multichannel grayscale TIFFs and TIFFs with multiple z-planes. Images must have OME-TIFF XML in their description.
 
 ## Command line arguments
 
