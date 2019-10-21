@@ -58,15 +58,15 @@ def rescale_translation_coordinates(trans_matrix, scale):
 
 
 def reg_features(left, right, scale):
-    # convert images to uint8, so detector can use them
-    img1_8b = cv.normalize(left, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
-    img2_8b = cv.normalize(right, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
+    # convert images to uint8 so detector can use them
+    img1 = cv.normalize(left, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
+    img2 = cv.normalize(right, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
 
-    img1_decr_shape = int(img1_8b.shape[1] * scale), int(img1_8b.shape[0] * scale)
-    img2_decr_shape = int(img2_8b.shape[1] * scale), int(img2_8b.shape[0] * scale)
+    img1_new_shape = int(img1.shape[1] * scale), int(img1.shape[0] * scale)
+    img2_new_shape = int(img2.shape[1] * scale), int(img2.shape[0] * scale)
 
-    img1 = cv.resize(img1_8b, img1_decr_shape, interpolation=cv.INTER_CUBIC)
-    img2 = cv.resize(img2_8b, img2_decr_shape, interpolation=cv.INTER_CUBIC)
+    img1 = cv.resize(img1, img1_new_shape, interpolation=cv.INTER_CUBIC)
+    img2 = cv.resize(img2, img2_new_shape, interpolation=cv.INTER_CUBIC)
 
     # create feature detector and keypoint descriptors
 
@@ -307,7 +307,7 @@ def main():
     out_dir = args.out_dir
     estimate_only = args.estimate_only
     load_params = args.load_params
-    scale = args.scale
+    scale = float(args.scale)
 
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
