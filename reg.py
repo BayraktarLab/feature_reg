@@ -4,6 +4,8 @@ import cv2 as cv
 import tifffile as tif
 from tifffile import TiffWriter
 from tifffile import TiffFile
+from skimage.feature import register_translation
+from skimage.transform import warp_polar
 import re
 import os
 import argparse
@@ -19,7 +21,7 @@ def alphaNumOrder(string):
 
 
 def calculate_padding_size(bigger_shape, smaller_shape):
-    """ find difference between shapes of bigger and smaller image"""
+    """ Find difference between shapes of bigger and smaller image. """
     diff = bigger_shape - smaller_shape
 
     if diff == 1:
@@ -32,6 +34,27 @@ def calculate_padding_size(bigger_shape, smaller_shape):
         dim1 = dim2 = int(diff / 2)
 
     return dim1, dim2
+
+
+def convert_to_transform_matrix(scale, angle, vector):
+    import math
+    """Return homogeneous transformation matrix from similarity parameters.
+    Transformation parameters are: isotropic scale factor, rotation angle (in
+    degrees), and translation vector (of size 2).
+    The order of transformations is: scale, rotate, translate.
+    """
+    transform_matrix = np.zeros((2,3), dtype=np.float32)
+    S = np.diag([scale, scale])
+    R = np.identity(2)
+    angle = math.radians(angle)
+    R[0, 0] = math.cos(angle)
+    R[0, 1] = math.sin(angle)
+    R[1, 0] = -math.sin(angle)
+    R[1, 1] = math.cos(angle)
+    new_vector = np.dot(vector, np.dot(R, S))
+    transform_matrix[:,:2] = R
+    transform_matrix[:,2] = new_vector
+    return transform_matrix
 
 
 def pad_to_size(target_shape, img):
@@ -91,11 +114,29 @@ def reg_features(left, right, scale):
 
     # find out how images shifted (compute affine transformation)
     A, mask = cv.estimateAffinePartial2D(dst_pts, src_pts)
-    M = rescale_translation_coordinates(A, 0.5)
+    M = rescale_translation_coordinates(A, scale)
 
     # warp image based on translation matrix
     # dst = cv.warpAffine(right, M, (right.shape[1], right.shape[0]), None)
     return M
+
+
+def reg_features2(img1, img2):
+    """ Image registration using phase shift correlation.
+        Angle shift is calculated using polar transformation.
+    """
+    # register translation
+    translation_shift, error, phasediff = register_translation(img1, img2, upsample_factor=20)
+
+    # register rotation
+    radius = max(img1.shape)
+    img1 = warp_polar(img1, radius=radius, scaling='linear', multichannel=False)
+    img2 = warp_polar(img2, radius=radius, scaling='linear', multichannel=False)
+    shift, error, phasediff = register_translation(img1, img2, upsample_factor=100)
+    rotation_shift = shift[0]
+    tansform_matrix = convert_to_transform_matrix(1, rotation_shift, (translation_shift[1], translation_shift[0]))
+
+    return tansform_matrix
 
 
 def read_images(path, is_dir):
@@ -134,7 +175,8 @@ def estimate_registration_parameters(image_paths, ref_image_path, scale):
             transform_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
             transform_matrices.append(transform_matrix)
         else:
-            transform_matrices.append(reg_features(reference_image, images[i], scale))
+            #transform_matrices.append(reg_features(reference_image, images[i], scale))
+            transform_matrices.append(reg_features2(reference_image, images[i]))
     return transform_matrices, target_shape, padding
 
 
@@ -278,7 +320,7 @@ def transform_by_plane(input_file_paths, output_path, target_shape, transform_ma
 
 def main():
 
-    parser = argparse.ArgumentParser(description='Feature based image registration')
+    parser = argparse.ArgumentParser(description='Image registration')
 
     parser.add_argument('--maxz_images', type=str, nargs='+', required=True,
                         help='specify, separated by space, paths to maxz images of anchor channels\n'
