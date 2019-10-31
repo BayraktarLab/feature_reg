@@ -386,7 +386,8 @@ def main():
     transform_matrices_flat = [M.flatten() for M in transform_matrices]
     transform_table = pd.DataFrame(transform_matrices_flat)
     for i in transform_table.index:
-        transform_table.loc[i, 'path'] = imgs_to_register[i]
+        dataset_name = 'cycle_{0}_{1}'.format( i, re.sub('\..*', '', os.path.basename(imgs_to_register[i])) )
+        transform_table.loc[i, 'name'] = dataset_name
     cols = transform_table.columns.to_list()
     cols = cols[-1:] + cols[:-1]
     transform_table = transform_table[cols]
