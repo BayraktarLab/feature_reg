@@ -9,6 +9,7 @@ from skimage.transform import warp_polar
 import re
 import os
 import argparse
+from datetime import datetime
 np.set_printoptions(suppress=True)
 
 
@@ -171,12 +172,13 @@ def estimate_registration_parameters(image_paths, ref_image_path, scale):
     reference_image = images[ref_img_id]
 
     for i in range(0, len(images)):
+        print('image {0}/{1}'.format(i, len(images)))
         if i == ref_img_id:
             transform_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
             transform_matrices.append(transform_matrix)
         else:
-            #transform_matrices.append(reg_features(reference_image, images[i], scale))
-            transform_matrices.append(reg_features2(reference_image, images[i]))
+            transform_matrices.append(reg_features(reference_image, images[i], scale))
+            #transform_matrices.append(reg_features2(reference_image, images[i]))
     return transform_matrices, target_shape, padding
 
 
@@ -276,6 +278,8 @@ def transform_by_plane(input_file_paths, output_path, target_shape, transform_ma
     with TiffWriter(output_path + 'out.tif', bigtiff=True) as TW:
 
         for i, path in enumerate(input_file_paths):
+            print('image {0}/{1}'.format(i, len(input_file_paths)))
+
             transform_matrix = transform_matrices[i]
 
             with TiffFile(path, is_ome=True) as TF:
@@ -356,6 +360,9 @@ def main():
     if not out_dir.endswith('/'):
         out_dir = out_dir + '/'
 
+    st = datetime.now()
+    print('\nstarted', st)
+
     if load_params == 'none':
         transform_matrices, target_shape, padding = estimate_registration_parameters(maxz_images, maxz_ref_image, scale)
     else:
@@ -395,6 +402,8 @@ def main():
     except PermissionError:
         transform_table.to_csv(out_dir + 'registration_parameters_1.csv', index=False)
 
+    fin = datetime.now()
+    print('\nelapsed time', fin - st)
 
 if __name__ == '__main__':
     main()
