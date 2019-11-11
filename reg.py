@@ -122,7 +122,7 @@ def reg_features(left, right, scale):
     return M
 
 
-def reg_features2(img1, img2):
+def reg_phase_cor(img1, img2):
     """ Image registration using phase shift correlation.
         Angle shift is calculated using polar transformation.
     """
@@ -178,7 +178,7 @@ def estimate_registration_parameters(image_paths, ref_image_path, scale):
             transform_matrices.append(transform_matrix)
         else:
             transform_matrices.append(reg_features(reference_image, images[i], scale))
-            #transform_matrices.append(reg_features2(reference_image, images[i]))
+            #transform_matrices.append(reg_phase_cor(reference_image, images[i]))
     return transform_matrices, target_shape, padding
 
 
@@ -243,7 +243,7 @@ def generate_new_metadata(image_paths, target_shape):
     write_format = '0' + str(len(str(ncycles)) + 1) + 'd'  # e.g. for number 5 format = 02d, result = 05
     channel_id = 0
     for i in range(0, ncycles):
-        cycle_name = 'Cycle' + format(i+1, write_format) + ' '
+        cycle_name = 'c' + format(i+1, write_format) + ' '
         channel_names = re.findall('(?<=<Channel).*?Name="(.*?)"', metadata_list[i])
         channel_ids = re.findall('Channel ID="(.*?)"', metadata_list[i])
         new_channel_names = [cycle_name + ch for ch in channel_names]
@@ -386,7 +386,7 @@ def main():
     transform_matrices_flat = [M.flatten() for M in transform_matrices]
     transform_table = pd.DataFrame(transform_matrices_flat)
     for i in transform_table.index:
-        dataset_name = 'cycle_{0}_{1}'.format( i, re.sub('\..*', '', os.path.basename(imgs_to_register[i])) )
+        dataset_name = 'cycle_{0}_{1}'.format( i+1, re.sub('\..*', '', os.path.basename(imgs_to_register[i])) )
         transform_table.loc[i, 'name'] = dataset_name
     cols = transform_table.columns.to_list()
     cols = cols[-1:] + cols[:-1]
