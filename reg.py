@@ -172,7 +172,7 @@ def estimate_registration_parameters(image_paths, ref_image_path, scale):
     reference_image = images[ref_img_id]
 
     for i in range(0, len(images)):
-        print('image {0}/{1}'.format(i, len(images)))
+        print('image {0}/{1}'.format(i + 1, len(images)))
         if i == ref_img_id:
             transform_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
             transform_matrices.append(transform_matrix)
@@ -213,8 +213,8 @@ def generate_new_metadata(image_paths, target_shape):
 
             ome_meta = TF.ome_metadata.replace('\n', '').replace('\r', '')
             metadata_list.append(ome_meta)
-            phys_size_x_list.extend(re.findall('PhysicalSizeX="(.*?)"', ome_meta))
-            phys_size_y_list.extend(re.findall('PhysicalSizeY="(.*?)"', ome_meta))
+            phys_size_x_list.extend(re.findall(r'PhysicalSizeX="(.*?)"', ome_meta))
+            phys_size_y_list.extend(re.findall(r'PhysicalSizeY="(.*?)"', ome_meta))
 
     max_time = max(time)
     max_planes = max(planes)
@@ -244,10 +244,10 @@ def generate_new_metadata(image_paths, target_shape):
     channel_id = 0
     for i in range(0, ncycles):
         cycle_name = 'c' + format(i+1, write_format) + ' '
-        channel_names = re.findall('(?<=<Channel).*?Name="(.*?)"', metadata_list[i])
-        channel_ids = re.findall('Channel ID="(.*?)"', metadata_list[i])
+        channel_names = re.findall(r'(?<=<Channel).*?Name="(.*?)"', metadata_list[i])
+        channel_ids = re.findall(r'Channel ID="(.*?)"', metadata_list[i])
         new_channel_names = [cycle_name + ch for ch in channel_names]
-        channel_meta = re.findall('<Channel.*?<TiffData', metadata_list[i])[0].replace('<TiffData', '')
+        channel_meta = re.findall(r'<Channel.*?<TiffData', metadata_list[i])[0].replace('<TiffData', '')
 
         for n in range(0, len(new_channel_names)):
             new_channel_id = 'Channel:0:' + str(channel_id)
@@ -278,7 +278,7 @@ def transform_by_plane(input_file_paths, output_path, target_shape, transform_ma
     with TiffWriter(output_path + 'out.tif', bigtiff=True) as TW:
 
         for i, path in enumerate(input_file_paths):
-            print('image {0}/{1}'.format(i, len(input_file_paths)))
+            print('image {0}/{1}'.format(i + 1, len(input_file_paths)))
 
             transform_matrix = transform_matrices[i]
 
