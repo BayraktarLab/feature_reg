@@ -8,6 +8,7 @@ from skimage.feature import register_translation
 from skimage.transform import warp_polar
 import re
 import os
+import gc
 import argparse
 from datetime import datetime
 np.set_printoptions(suppress=True)
@@ -81,25 +82,36 @@ def rescale_translation_coordinates(trans_matrix, scale):
     return new_translation_matrix
 
 
-def reg_features(left, right, scale):
+def reg_features(reference_image, moving_image, scale):
+    """ Perform feature based image registration """
     # convert images to uint8 so detector can use them
-    img1 = cv.normalize(left, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
-    img2 = cv.normalize(right, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
-
-    img1_new_shape = int(img1.shape[1] * scale), int(img1.shape[0] * scale)
-    img2_new_shape = int(img2.shape[1] * scale), int(img2.shape[0] * scale)
+    if reference_image.dtype != np.uint8:
+        img1 = cv.normalize(reference_image, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
+    else:
+        img1 = reference_image
+    if moving_image.dtype != np.uint8:
+        img2 = cv.normalize(moving_image, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
+    else:
+        img2 = moving_image
+    """
+    img1_new_shape = int(reference_image.shape[1] * scale), int(reference_image.shape[0] * scale)
+    img2_new_shape = int(moving_image.shape[1] * scale), int(moving_image.shape[0] * scale)
 
     img1 = cv.resize(img1, img1_new_shape, interpolation=cv.INTER_CUBIC)
     img2 = cv.resize(img2, img2_new_shape, interpolation=cv.INTER_CUBIC)
-
+    """
     # create feature detector and keypoint descriptors
 
     detector = cv.FastFeatureDetector_create()
     descriptor = cv.xfeatures2d.DAISY_create()
     kp1 = detector.detect(img1)
     kp1, des1 = descriptor.compute(img1, kp1)
+    del img1
+    gc.collect()
     kp2 = detector.detect(img2)
     kp2, des2 = descriptor.compute(img2, kp2)
+    del img2
+    gc.collect()
     matcher = cv.FlannBasedMatcher_create()
     matches = matcher.knnMatch(des2, des1, k=2)
 
@@ -127,7 +139,7 @@ def reg_phase_cor(img1, img2):
         Angle shift is calculated using polar transformation.
     """
     # register translation
-    translation_shift, error, phasediff = register_translation(img1, img2, upsample_factor=20)
+    translation_shift, error, phasediff = register_translation(img1, img2)
 
     # register rotation
     radius = max(img1.shape)
@@ -157,28 +169,41 @@ def read_images(path, is_dir):
 
 def estimate_registration_parameters(image_paths, ref_image_path, scale):
     print('estimating registration parameters')
+    nimages = len(image_paths)
+    padding = []
     transform_matrices = []
-    images = read_images(image_paths, is_dir=False)
+    image_shapes = []
+
+    for i in range(0, len(image_paths)):
+        with TiffFile(image_paths[i]) as TF:
+            image_shapes.append(TF.series[0].shape)
 
     ref_img_id = image_paths.index(ref_image_path)
-    max_size_x = max([img.shape[1] for img in images])
-    max_size_y = max([img.shape[0] for img in images])
+    max_size_x = max([s[1] for s in image_shapes])
+    max_size_y = max([s[0] for s in image_shapes])
     target_shape = (max_size_y, max_size_x)
-    padding = []
-    for i in range(0, len(images)):
-        images[i], pad = pad_to_size2((max_size_y, max_size_x), images[i])
-        padding.append(pad)
+    target_shape_resized = int(target_shape[1] * scale), int(target_shape[0] * scale)
 
-    reference_image = images[ref_img_id]
+    reference_image = cv.normalize(tif.imread(ref_image_path), None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
+    reference_image, pad = pad_to_size2((max_size_y, max_size_x), reference_image)
+    padding.append(pad)
+    reference_image = cv.resize(reference_image, target_shape_resized, interpolation=cv.INTER_CUBIC)
 
-    for i in range(0, len(images)):
-        print('image {0}/{1}'.format(i + 1, len(images)))
+    gc.collect()
+
+    for i in range(0, nimages):
+        print('image {0}/{1}'.format(i + 1, nimages))
         if i == ref_img_id:
             transform_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
             transform_matrices.append(transform_matrix)
         else:
-            transform_matrices.append(reg_features(reference_image, images[i], scale))
+            moving_image, pad = pad_to_size2((max_size_y, max_size_x), cv.normalize(tif.imread(image_paths[i]), None, 0, 255, cv.NORM_MINMAX, cv.CV_8U))
+            padding.append(pad)
+            moving_image = cv.resize(moving_image, target_shape_resized, interpolation=cv.INTER_CUBIC)
+
+            transform_matrices.append(reg_features(reference_image, moving_image, scale))
             #transform_matrices.append(reg_phase_cor(reference_image, images[i]))
+        gc.collect()
     return transform_matrices, target_shape, padding
 
 
