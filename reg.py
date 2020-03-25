@@ -197,7 +197,7 @@ def estimate_registration_parameters(img_paths, ref_img_id, ref_channel, scale):
 
     for i in range(0, len(img_paths)):
         with TiffFile(img_paths[i]) as TF:
-            img_shapes.append(TF.series[0].shape)
+            img_shapes.append(TF.series[0].shape[-2:])
 
     ref_img_path = img_paths[ref_img_id]
     max_size_x = max([s[1] for s in img_shapes])
@@ -206,7 +206,7 @@ def estimate_registration_parameters(img_paths, ref_img_id, ref_channel, scale):
     target_shape_resized = int(target_shape[1] * scale), int(target_shape[0] * scale)
 
     reference_img = read_and_max_project(ref_img_path, ref_channel)
-    reference_img, pad = pad_to_size2((max_size_y, max_size_x), reference_img)
+    reference_img, pad = pad_to_size2(target_shape, reference_img)
     padding.append(pad)
     reference_img = cv.resize(reference_img, target_shape_resized, interpolation=cv.INTER_CUBIC)
 
@@ -218,7 +218,7 @@ def estimate_registration_parameters(img_paths, ref_img_id, ref_channel, scale):
             transform_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
             transform_matrices.append(transform_matrix)
         else:
-            moving_img, pad = pad_to_size2((max_size_y, max_size_x), read_and_max_project(img_paths[i], ref_channel))
+            moving_img, pad = pad_to_size2(target_shape, read_and_max_project(img_paths[i], ref_channel))
             padding.append(pad)
             moving_img = cv.resize(moving_img, target_shape_resized, interpolation=cv.INTER_CUBIC)
 
