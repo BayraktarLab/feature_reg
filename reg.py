@@ -1,17 +1,15 @@
+import re
+import os
+import gc
+import argparse
+from datetime import datetime
+
 import numpy as np
 import pandas as pd
 import cv2 as cv
 import tifffile as tif
 from tifffile import TiffWriter
 from tifffile import TiffFile
-from skimage.feature import register_translation
-from skimage.transform import warp_polar
-import re
-import os
-import gc
-import argparse
-from datetime import datetime
-np.set_printoptions(suppress=True)
 
 
 def alphaNumOrder(string):
@@ -38,27 +36,6 @@ def calculate_padding_size(bigger_shape, smaller_shape):
     return dim1, dim2
 
 
-def convert_to_transform_matrix(scale, angle, vector):
-    import math
-    """Return homogeneous transformation matrix from similarity parameters.
-    Transformation parameters are: isotropic scale factor, rotation angle (in
-    degrees), and translation vector (of size 2).
-    The order of transformations is: scale, rotate, translate.
-    """
-    transform_matrix = np.zeros((2,3), dtype=np.float32)
-    S = np.diag([scale, scale])
-    R = np.identity(2)
-    angle = math.radians(angle)
-    R[0, 0] = math.cos(angle)
-    R[0, 1] = math.sin(angle)
-    R[1, 0] = -math.sin(angle)
-    R[1, 1] = math.cos(angle)
-    new_vector = np.dot(vector, np.dot(R, S))
-    transform_matrix[:,:2] = R
-    transform_matrix[:,2] = new_vector
-    return transform_matrix
-
-
 def pad_to_size(target_shape, img):
     left, right = calculate_padding_size(target_shape[1], img.shape[1])
     top, bottom = calculate_padding_size(target_shape[0], img.shape[0])
@@ -82,26 +59,19 @@ def rescale_translation_coordinates(trans_matrix, scale):
     return new_translation_matrix
 
 
-def reg_features(reference_image, moving_image, scale):
+def reg_features(reference_img, moving_img, scale):
     """ Perform feature based image registration """
     # convert images to uint8 so detector can use them
-    if reference_image.dtype != np.uint8:
-        img1 = cv.normalize(reference_image, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
+    if reference_img.dtype != np.uint8:
+        img1 = cv.normalize(reference_img, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
     else:
-        img1 = reference_image
-    if moving_image.dtype != np.uint8:
-        img2 = cv.normalize(moving_image, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
+        img1 = reference_img
+    if moving_img.dtype != np.uint8:
+        img2 = cv.normalize(moving_img, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
     else:
-        img2 = moving_image
-    """
-    img1_new_shape = int(reference_image.shape[1] * scale), int(reference_image.shape[0] * scale)
-    img2_new_shape = int(moving_image.shape[1] * scale), int(moving_image.shape[0] * scale)
+        img2 = moving_img
 
-    img1 = cv.resize(img1, img1_new_shape, interpolation=cv.INTER_CUBIC)
-    img2 = cv.resize(img2, img2_new_shape, interpolation=cv.INTER_CUBIC)
-    """
     # create feature detector and keypoint descriptors
-
     detector = cv.FastFeatureDetector_create()
     descriptor = cv.xfeatures2d.DAISY_create()
     kp1 = detector.detect(img1)
@@ -121,6 +91,13 @@ def reg_features(reference_image, moving_image, scale):
         if m.distance < 0.3 * n.distance:
             good.append(m)
 
+    if good == []:
+        for m, n in matches:
+            if m.distance < 0.5 * n.distance:
+                good.append(m)
+
+    assert good != [], 'Not enough good features to calculate image alignment'
+
     # convert keypoints to format acceptable for estimator
     src_pts = np.float32([kp1[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
     dst_pts = np.float32([kp2[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
@@ -132,24 +109,6 @@ def reg_features(reference_image, moving_image, scale):
     # warp image based on translation matrix
     # dst = cv.warpAffine(right, M, (right.shape[1], right.shape[0]), None)
     return M
-
-
-def reg_phase_cor(img1, img2):
-    """ Image registration using phase shift correlation.
-        Angle shift is calculated using polar transformation.
-    """
-    # register translation
-    translation_shift, error, phasediff = register_translation(img1, img2)
-
-    # register rotation
-    radius = max(img1.shape)
-    img1 = warp_polar(img1, radius=radius, scaling='linear', multichannel=False)
-    img2 = warp_polar(img2, radius=radius, scaling='linear', multichannel=False)
-    shift, error, phasediff = register_translation(img1, img2, upsample_factor=100)
-    rotation_shift = shift[0]
-    tansform_matrix = convert_to_transform_matrix(1, rotation_shift, (translation_shift[1], translation_shift[0]))
-
-    return tansform_matrix
 
 
 def read_images(path, is_dir):
@@ -167,47 +126,108 @@ def read_images(path, is_dir):
     return img_list
 
 
-def estimate_registration_parameters(image_paths, ref_image_path, scale):
+def find_ref_ch(ome_meta, ref_channel):
+    # find selected reference channels in ome metadata
+    if ome_meta is None:
+        print('No OME XML detected. Using first channel')
+        return 0
+    matches = re.findall(r'Fluor=".*?"', ome_meta)
+    if matches != []:
+        matches = [m.replace('Fluor=', '').replace('"', '') for m in matches]
+        matches = [re.sub(r'c\d+\s+', '', m) for m in matches]  # remove cycle name
+    else:
+        matches = re.findall(r'ID="Channel:.*?" Name=".*?"', ome_meta)
+        matches = [re.sub(r'ID="Channel:.*?" Name="[c\d\s]*', '', m) for m in matches]
+        matches = [m.replace('"', '') for m in matches]
+    # encode reference channels as 1 other 0
+
+    for i, channel in enumerate(matches):
+        if channel == ref_channel:
+            ref_channel_id = i
+    # check if reference channel is available
+    if ref_channel not in matches:
+        raise ValueError('Incorrect reference channel. Available reference channels ' + ', '.join(set(matches)))
+
+    return ref_channel_id
+
+
+def read_and_max_project(path, ref_channel):
+    """ Iteratively load z planes to create max intensity projection"""
+    with TiffFile(path) as TF:
+        img_axes = list(TF.series[0].axes)
+        img_shape = TF.series[0].shape
+        ome_meta = TF.ome_metadata
+    if len(img_shape) == 2 and ome_meta is None:
+        ref_channel_id = 0
+    else:
+        ref_channel_id = find_ref_ch(ome_meta, ref_channel)
+
+    if 'Z' in img_axes:
+        idx = img_axes.index('Z')
+        nzplanes = img_shape[idx]
+    else:
+        nzplanes = 1
+    if 'C' in img_axes:
+        idx = img_axes.index('C')
+        nchannels = img_shape[idx]
+    else:
+        nchannels = 1
+
+    start_reading_from = ref_channel_id * nzplanes
+    end_reading_at = start_reading_from + nzplanes
+
+    if nzplanes == 1:
+        # handle maxz projection where 1 z plane per channel
+        return cv.normalize(tif.imread(path, key=start_reading_from), None, 0, 255, cv.NORM_MINMAX, cv.CV_32F)
+    else:
+        # initialize with first z plane
+        max_intensity = cv.normalize(tif.imread(path, key=start_reading_from), None, 0, 255, cv.NORM_MINMAX, cv.CV_32F)
+        for i in range(start_reading_from + 1, end_reading_at + 1):
+            max_intensity = np.maximum(max_intensity, tif.imread(path, key=i))
+
+    return max_intensity
+
+
+def estimate_registration_parameters(img_paths, ref_img_id, ref_channel, scale):
     print('estimating registration parameters')
-    nimages = len(image_paths)
+    nimgs = len(img_paths)
     padding = []
     transform_matrices = []
-    image_shapes = []
+    img_shapes = []
 
-    for i in range(0, len(image_paths)):
-        with TiffFile(image_paths[i]) as TF:
-            image_shapes.append(TF.series[0].shape)
+    for i in range(0, len(img_paths)):
+        with TiffFile(img_paths[i]) as TF:
+            img_shapes.append(TF.series[0].shape)
 
-    ref_img_id = image_paths.index(ref_image_path)
-    max_size_x = max([s[1] for s in image_shapes])
-    max_size_y = max([s[0] for s in image_shapes])
+    ref_img_path = img_paths[ref_img_id]
+    max_size_x = max([s[1] for s in img_shapes])
+    max_size_y = max([s[0] for s in img_shapes])
     target_shape = (max_size_y, max_size_x)
     target_shape_resized = int(target_shape[1] * scale), int(target_shape[0] * scale)
 
-    reference_image = cv.normalize(tif.imread(ref_image_path), None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
-    reference_image, pad = pad_to_size2((max_size_y, max_size_x), reference_image)
+    reference_img = read_and_max_project(ref_img_path, ref_channel)
+    reference_img, pad = pad_to_size2((max_size_y, max_size_x), reference_img)
     padding.append(pad)
-    reference_image = cv.resize(reference_image, target_shape_resized, interpolation=cv.INTER_CUBIC)
+    reference_img = cv.resize(reference_img, target_shape_resized, interpolation=cv.INTER_CUBIC)
 
     gc.collect()
 
-    for i in range(0, nimages):
-        print('image {0}/{1}'.format(i + 1, nimages))
+    for i in range(0, nimgs):
+        print('image {0}/{1}'.format(i + 1, nimgs))
         if i == ref_img_id:
             transform_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
             transform_matrices.append(transform_matrix)
         else:
-            moving_image, pad = pad_to_size2((max_size_y, max_size_x), cv.normalize(tif.imread(image_paths[i]), None, 0, 255, cv.NORM_MINMAX, cv.CV_8U))
+            moving_img, pad = pad_to_size2((max_size_y, max_size_x), read_and_max_project(img_paths[i], ref_channel))
             padding.append(pad)
-            moving_image = cv.resize(moving_image, target_shape_resized, interpolation=cv.INTER_CUBIC)
+            moving_img = cv.resize(moving_img, target_shape_resized, interpolation=cv.INTER_CUBIC)
 
-            transform_matrices.append(reg_features(reference_image, moving_image, scale))
-            #transform_matrices.append(reg_phase_cor(reference_image, images[i]))
+            transform_matrices.append(reg_features(reference_img, moving_img, scale))
         gc.collect()
     return transform_matrices, target_shape, padding
 
 
-def generate_new_metadata(image_paths, target_shape):
+def generate_new_metadata(img_paths, target_shape):
     time = []
     planes = []
     channels = []
@@ -215,24 +235,24 @@ def generate_new_metadata(image_paths, target_shape):
     phys_size_x_list = []
     phys_size_y_list = []
 
-    for i in range(0, len(image_paths)):
-        with TiffFile(image_paths[i]) as TF:
-            image_axes = list(TF.series[0].axes)
-            image_shape = TF.series[0].shape
+    for i in range(0, len(img_paths)):
+        with TiffFile(img_paths[i]) as TF:
+            img_axes = list(TF.series[0].axes)
+            img_shape = TF.series[0].shape
 
-            if 'T' in image_axes:
-                idx = image_axes.index('T')
-                time.append(image_shape[idx])
+            if 'T' in img_axes:
+                idx = img_axes.index('T')
+                time.append(img_shape[idx])
             else:
                 time.append(1)
-            if 'Z' in image_axes:
-                idx = image_axes.index('Z')
-                planes.append(image_shape[idx])
+            if 'Z' in img_axes:
+                idx = img_axes.index('Z')
+                planes.append(img_shape[idx])
             else:
                 planes.append(1)
-            if 'C' in image_axes:
-                idx = image_axes.index('C')
-                channels.append(image_shape[idx])
+            if 'C' in img_axes:
+                idx = img_axes.index('C')
+                channels.append(img_shape[idx])
             else:
                 channels.append(1)
 
@@ -262,7 +282,7 @@ def generate_new_metadata(image_paths, target_shape):
     for key, value in sizes.items():
         header = re.sub(key, value, header)
 
-    ncycles = len(image_paths)
+    ncycles = len(img_paths)
 
     total_channel_meta = ''
     write_format = '0' + str(len(str(ncycles)) + 1) + 'd'  # e.g. for number 5 format = 02d, result = 05
@@ -276,8 +296,7 @@ def generate_new_metadata(image_paths, target_shape):
 
         for n in range(0, len(new_channel_names)):
             new_channel_id = 'Channel:0:' + str(channel_id)
-            channel_meta = channel_meta.replace(channel_names[n], new_channel_names[n]).replace(channel_ids[n],
-                                                                                                new_channel_id)
+            channel_meta = channel_meta.replace(channel_names[n], new_channel_names[n]).replace(channel_ids[n], new_channel_id)
             channel_id += 1
         total_channel_meta += channel_meta
 
@@ -298,8 +317,14 @@ def generate_new_metadata(image_paths, target_shape):
 
 def transform_by_plane(input_file_paths, output_path, target_shape, transform_matrices):
     print('transforming images')
-    max_time, max_planes, max_channels, new_meta = generate_new_metadata(input_file_paths, target_shape)
+    # try allows to work with images without omexml. Need to remove later
+    try:
+        max_time, max_planes, max_channels, new_meta = generate_new_metadata(input_file_paths, target_shape)
+    except AttributeError:
+        max_time, max_planes, max_channels = (1,1,1)
+        new_meta = ''
     no_transform_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+
     with TiffWriter(output_path + 'out.tif', bigtiff=True) as TW:
 
         for i, path in enumerate(input_file_paths):
@@ -308,22 +333,22 @@ def transform_by_plane(input_file_paths, output_path, target_shape, transform_ma
             transform_matrix = transform_matrices[i]
 
             with TiffFile(path, is_ome=True) as TF:
-                image_axes = list(TF.series[0].axes)
-                image_shape = TF.series[0].shape
+                img_axes = list(TF.series[0].axes)
+                img_shape = TF.series[0].shape
 
-                if 'C' in image_axes:
-                    idx = image_axes.index('C')
-                    nchannels = image_shape[idx]
+                if 'C' in img_axes:
+                    idx = img_axes.index('C')
+                    nchannels = img_shape[idx]
                 else:
                     nchannels = 1
-                if 'Z' in image_axes:
-                    idx = image_axes.index('Z')
-                    nplanes = image_shape[idx]
+                if 'Z' in img_axes:
+                    idx = img_axes.index('Z')
+                    nplanes = img_shape[idx]
                 else:
                     nplanes = 1
-                if 'T' in image_axes:
-                    idx = image_axes.index('T')
-                    ntime = image_shape[idx]
+                if 'T' in img_axes:
+                    idx = img_axes.index('T')
+                    ntime = img_shape[idx]
                 else:
                     ntime = 1
 
@@ -331,18 +356,19 @@ def transform_by_plane(input_file_paths, output_path, target_shape, transform_ma
                 for t in range(0, ntime):
                     for z in range(0, nplanes):
                         for c in range(0, nchannels):
-                            image = TF.asarray(key=page)
+                            img = TF.asarray(key=page)
 
-                            if image.shape != target_shape:
-                                image = pad_to_size(target_shape, image)
+                            if img.shape != target_shape:
+                                img = pad_to_size(target_shape, img)
                             if not np.array_equal(transform_matrix, no_transform_matrix):
-                                image = cv.warpAffine(image, transform_matrix, (image.shape[1], image.shape[0]), None)
+                                img = cv.warpAffine(img, transform_matrix, (img.shape[1], img.shape[0]), None)
 
-                            TW.save(image, photometric='minisblack', description=new_meta)
+                            TW.save(img, photometric='minisblack', description=new_meta)
                             page += 1
+
                         if nplanes < max_planes:
                             diff = max_planes - nplanes
-                            empty_page = np.zeros_like(image)
+                            empty_page = np.zeros_like(img)
                             for a in range(0, diff):
                                 TW.save(empty_page, photometric='minisblack', description=new_meta)
 
@@ -351,34 +377,31 @@ def main():
 
     parser = argparse.ArgumentParser(description='Image registration')
 
-    parser.add_argument('--maxz_images', type=str, nargs='+', required=True,
-                        help='specify, separated by space, paths to maxz images of anchor channels\n'
-                             ' you want to use for estimating registration parameters.\n'
-                             ' They should also include reference image.')
-    parser.add_argument('--maxz_ref_image', type=str, required=True,
-                        help='specify path to reference maxz image, the one that will be used as reference for aligning all other images.')
-    parser.add_argument('--register_images', type=str, nargs='+', default='none',
-                        help='specify, separated by space, paths to z-stacked images you want to register.\n'
-                             'They should be in the same order as images specified in --maxz_images argument.'
-                             'If not specified, --maxz_images will be used.')
-    parser.add_argument('--out_dir', type=str, required=True,
+    parser.add_argument('-i', type=str, nargs='+', required=True,
+                        help='paths to images you want to register separated by space.')
+    parser.add_argument('-r', type=int, required=True,
+                        help='reference image id, e.g. if -i 1.tif 2.tif 3.tif, and you ref image is 1.tif, then -r 0 (starting from 0)')
+    parser.add_argument('-c', type=str, required=True,
+                        help='reference channel name, e.g. DAPI. Enclose in double quotes if name consist of several words e.g. "Atto 490LS".')
+    parser.add_argument('-o', type=str, required=True,
                         help='directory to output registered image.')
+    parser.add_argument('-s', type=float, default=0.5,
+                        help='scale of the images during registration in fractions of 1. 1-full scale, 0.5 - half scale. '
+                             'Default value is 0.5.')
     parser.add_argument('--estimate_only', action='store_true',
                         help='add this flag if you want to get only registration parameters and do not want to process images.')
-    parser.add_argument('--load_params', type=str, default='none',
+    parser.add_argument('--load_param', type=str, default='none',
                         help='specify path to csv file with registration parameters')
-    parser.add_argument('--scale', type=str, default=0.5,
-                        help='scale of the images during registration. Default value is 0.5. '
-                             'The lower the value the smaller the scale.')
 
     args = parser.parse_args()
-    maxz_images = args.maxz_images
-    maxz_ref_image = args.maxz_ref_image
-    imgs_to_register = args.register_images
-    out_dir = args.out_dir
+
+    img_paths = args.i
+    ref_img_id = args.r
+    ref_channel = args.c
+    out_dir = args.o
+    scale = args.s
     estimate_only = args.estimate_only
-    load_params = args.load_params
-    scale = float(args.scale)
+    load_param = args.load_param
 
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
@@ -388,10 +411,10 @@ def main():
     st = datetime.now()
     print('\nstarted', st)
 
-    if load_params == 'none':
-        transform_matrices, target_shape, padding = estimate_registration_parameters(maxz_images, maxz_ref_image, scale)
+    if load_param == 'none':
+        transform_matrices, target_shape, padding = estimate_registration_parameters(img_paths, ref_img_id, ref_channel, scale)
     else:
-        reg_param = pd.read_csv(load_params)
+        reg_param = pd.read_csv(load_param)
         target_shape = (reg_param.loc[0, 'height'], reg_param.loc[0, 'width'])
 
         transform_matrices = []
@@ -402,16 +425,13 @@ def main():
             transform_matrices.append(matrix)
             padding.append(pad)
 
-    if imgs_to_register == 'none':
-        imgs_to_register = maxz_images
-
     if not estimate_only:
-        transform_by_plane(imgs_to_register, out_dir, target_shape, transform_matrices)
+        transform_by_plane(img_paths, out_dir, target_shape, transform_matrices)
 
     transform_matrices_flat = [M.flatten() for M in transform_matrices]
     transform_table = pd.DataFrame(transform_matrices_flat)
     for i in transform_table.index:
-        dataset_name = 'cycle_{0}_{1}'.format( i+1, re.sub('\..*', '', os.path.basename(imgs_to_register[i])) )
+        dataset_name = 'dataset_{0}_{1}'.format(i + 1, re.sub('\..*', '', os.path.basename(img_paths[i])) )
         transform_table.loc[i, 'name'] = dataset_name
     cols = transform_table.columns.to_list()
     cols = cols[-1:] + cols[:-1]
@@ -430,6 +450,7 @@ def main():
 
     fin = datetime.now()
     print('\nelapsed time', fin - st)
+
 
 if __name__ == '__main__':
     main()
