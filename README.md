@@ -1,6 +1,9 @@
 # Feature based image registrator
 
-The programs uses `FAST` feature finder and `DAISY` feature descriptor for registration. It can align images of different size by padding them with 0 values. The image registrator can work with multichannel grayscale TIFFs and TIFFs with multiple z-planes. Images must have OME-TIFF XML in their description.
+The image registrator uses `FAST` feature finder and `DAISY` feature descriptor for registration. 
+It can align images of different size by padding them with 0 values. 
+The image registrator can work with multichannel grayscale TIFFs and TIFFs with multiple z-planes. 
+Images **MUST** have OME-TIFF XML in their description.
 
 ## Command line arguments
 
@@ -25,4 +28,7 @@ The programs uses `FAST` feature finder and `DAISY` feature descriptor for regis
 
 ## Dependencies
 
-`numpy pandas tifffile opencv-contrib-python`
+`numpy pandas tifffile opencv-contrib-python scikit-image`
+
+`scikit-image` is necessary for affine transformation of big images that has more than 32000 pixels in one or two dimensions. 
+The affine registration process in `scikit-image` requires usage of `float64` data, so you need amount of RAM at least 3 times the size of the picture (channel, z-plane).
