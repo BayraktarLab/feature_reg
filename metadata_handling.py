@@ -154,21 +154,26 @@ def find_ref_channel(ome_meta, ref_channel):
         return 0
 
     channels, channel_names, channel_ids, channel_fluors = extract_channel_info(str_to_xml(ome_meta))
-    found_ref_channel = False
-    if channel_fluors != []:
-        fluors = [re.sub(r'^c\d+\s+', '', fluor) for fluor in channel_fluors]  # remove cycle name
-        if ref_channel in fluors:
-            found_ref_channel = True
-            matches = fluors
-    else:
-        names = [re.sub(r'^c\d+\s+', '', name) for name in channel_names]
-        if ref_channel in names:
-            found_ref_channel = True
-            matches = names
 
-    # check if reference channel is available
-    if not found_ref_channel:
-        raise ValueError('Incorrect reference channel. Available reference channels ' + ', '.join(set(matches)))
+    # strip cycle id from channel name and fluor name
+    if channel_fluors != []:
+        fluors = [re.sub(r'^(c|cyc|cycle)\d+(\s+|_)', '', fluor) for fluor in channel_fluors]  # remove cycle name
+    else:
+        fluors = None
+    names = [re.sub(r'^(c|cyc|cycle)\d+(\s+|_)', '', name) for name in channel_names]
+
+    # check if reference channel is present somewhere
+    if ref_channel in names:
+        matches = names
+    elif fluors is not None and ref_channel in fluors:
+        matches = fluors
+    else:
+        if fluors is not None:
+            message = 'Incorrect reference channel. Available channel names: {names}, fluors: {fluors}'
+            raise ValueError(message.format(names=', '.join(set(names)), fluors=', '.join(set(fluors))))
+        else:
+            message = 'Incorrect reference channel. Available channel names: {names}'
+            raise ValueError(message.format(names=', '.join(set(names))))
 
     # get position of reference channel in cycle
     for i, channel in enumerate(matches):
