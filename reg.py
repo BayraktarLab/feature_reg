@@ -7,6 +7,7 @@ from datetime import datetime
 
 import numpy as np
 import pandas as pd
+from skimage.transform import AffineTransform, warp
 import cv2 as cv
 import tifffile as tif
 
@@ -240,16 +241,15 @@ def transform_by_plane(input_file_paths, out_dir, target_shape, transform_matric
                             if img.shape != target_shape:
                                 img = pad_to_size(target_shape, img)
                             if not np.array_equal(transform_matrix, no_transform_matrix):
+                                proper_transform_matrix = np.append(transform_matrix, [[0, 0, 1]], axis=0)
+                                try:
+                                    inv_matrix = np.linalg.inv(proper_transform_matrix)
+                                except np.linalg.LinAlgError as err:
+                                    # if transformation matrix is singular - use partial inverse
+                                    inv_matrix = np.linalg.pinv(proper_transform_matrix)
 
-                                if img.shape[0] > 32000 or img.shape[1] > 32000:
-                                    from skimage import transform
-                                    homography_matrix = np.append(transform_matrix, [[0, 0, 1]], axis=0)
-                                    skimage_transform_matrix = transform.AffineTransform(matrix=homography_matrix)
-                                    img = transform.warp(img, inverse_map=skimage_transform_matrix.inverse,
-                                                         output_shape=img.shape,
-                                                         preserve_range=True).astype(original_dtype)
-                                else:
-                                    img = cv.warpAffine(img, transform_matrix, (img.shape[1], img.shape[0]), None)
+                                skimage_affine_transform = AffineTransform(inv_matrix)
+                                img = warp(img, skimage_affine_transform, output_shape=img.shape, preserve_range=True).astype(original_dtype)
 
                             TW.save(img, photometric='minisblack', description=new_meta)
                             page += 1
