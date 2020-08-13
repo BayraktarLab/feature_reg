@@ -4,6 +4,7 @@ The image registrator uses `FAST` feature finder and `DAISY` feature descriptor 
 It can align images of different size by padding them with 0 values. 
 The image registrator can work with multichannel grayscale TIFFs and TIFFs with multiple z-planes. 
 Images **MUST** have OME-TIFF XML in their description.
+The script does tile based registration of images to avoid big memory consumption. 
 
 ## Command line arguments
 
@@ -13,9 +14,7 @@ Images **MUST** have OME-TIFF XML in their description.
 
 **`-c`**    reference channel name, e.g. DAPI. Enclose in double quotes if name consist of several words e.g. "Atto 490LS".
 
-**`-o`**    directory to output registered image.')
-
-**`-s`**    scale of the images during registration in fractions of 1. 1 - full scale, 0.5 - half scale. Default value is 0.5.
+**`-o`**    directory to output registered image.
 
 **`--estimate_only`**   add this flag if you want to get only registration parameters and do not want to process images.
 

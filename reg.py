@@ -6,12 +6,13 @@ import argparse
 from datetime import datetime
 
 import numpy as np
-import pandas as pd
 from skimage.transform import AffineTransform, warp
+import pandas as pd
 import cv2 as cv
 import tifffile as tif
 
 from metadata_handling import str_to_xml, extract_pixels_info, generate_new_metadata, find_ref_channel
+from tile_registration import split_into_tiles_and_register
 
 
 def alphaNumOrder(string):
@@ -71,69 +72,6 @@ def pad_to_size2(target_shape, img):
     return cv.copyMakeBorder(img, top, bottom, left, right, cv.BORDER_CONSTANT, None, 0), (left, right, top, bottom)
 
 
-def rescale_translation_coordinates(trans_matrix, scale):
-    """ Does rescaling of translation coordinates x and y """
-    x_coord = trans_matrix[0][2] / scale
-    y_coord = trans_matrix[1][2] / scale
-    # new_translation_matrix = np.array([[1.0, 0.0, x_coord], [0.0, 1.0, y_coord]], dtype=np.float32)
-    new_translation_matrix = np.array(
-        [[trans_matrix[0][0], trans_matrix[0][1], x_coord], [trans_matrix[1][0], trans_matrix[1][1], y_coord]],
-        dtype=np.float32)
-    return new_translation_matrix
-
-
-def reg_features(reference_img, moving_img, scale):
-    """ Perform feature based image registration """
-    # convert images to uint8 so detector can use them
-    if reference_img.dtype != np.uint8:
-        img1 = cv.normalize(reference_img, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
-    else:
-        img1 = reference_img
-    if moving_img.dtype != np.uint8:
-        img2 = cv.normalize(moving_img, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
-    else:
-        img2 = moving_img
-
-    # create feature detector and keypoint descriptors
-    detector = cv.FastFeatureDetector_create()
-    descriptor = cv.xfeatures2d.DAISY_create()
-    kp1 = detector.detect(img1)
-    kp1, des1 = descriptor.compute(img1, kp1)
-    del img1
-    gc.collect()
-    kp2 = detector.detect(img2)
-    kp2, des2 = descriptor.compute(img2, kp2)
-    del img2
-    gc.collect()
-    matcher = cv.FlannBasedMatcher_create()
-    matches = matcher.knnMatch(des2, des1, k=2)
-
-    # Filter out unreliable points
-    good = []
-    for m, n in matches:
-        if m.distance < 0.3 * n.distance:
-            good.append(m)
-
-    if good == []:
-        for m, n in matches:
-            if m.distance < 0.5 * n.distance:
-                good.append(m)
-
-    assert good != [], 'Not enough good features to calculate image alignment'
-
-    # convert keypoints to format acceptable for estimator
-    src_pts = np.float32([kp1[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
-    dst_pts = np.float32([kp2[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
-
-    # find out how images shifted (compute affine transformation)
-    A, mask = cv.estimateAffinePartial2D(dst_pts, src_pts)
-    M = rescale_translation_coordinates(A, scale)
-
-    # warp image based on translation matrix
-    # dst = cv.warpAffine(right, M, (right.shape[1], right.shape[0]), None)
-    return M
-
-
 def read_and_max_project(path, ref_channel):
     """ Iteratively load z planes to create max intensity projection"""
     with tif.TiffFile(path) as TF:
@@ -164,7 +102,7 @@ def read_and_max_project(path, ref_channel):
     return max_intensity
 
 
-def estimate_registration_parameters(img_paths, ref_img_id, ref_channel, scale):
+def estimate_registration_parameters(img_paths, ref_img_id, ref_channel):
     print('estimating registration parameters')
     nimgs = len(img_paths)
     padding = []
@@ -179,26 +117,21 @@ def estimate_registration_parameters(img_paths, ref_img_id, ref_channel, scale):
     max_size_x = max([s[1] for s in img_shapes])
     max_size_y = max([s[0] for s in img_shapes])
     target_shape = (max_size_y, max_size_x)
-    target_shape_resized = int(target_shape[1] * scale), int(target_shape[0] * scale)
 
     reference_img = read_and_max_project(ref_img_path, ref_channel)
     reference_img, pad = pad_to_size2(target_shape, reference_img)
     padding.append(pad)
-    reference_img = cv.resize(reference_img, target_shape_resized, interpolation=cv.INTER_CUBIC)
-
     gc.collect()
 
     for i in range(0, nimgs):
         print('image {0}/{1}'.format(i + 1, nimgs))
         if i == ref_img_id:
-            transform_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
-            transform_matrices.append(transform_matrix)
+            identity_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+            transform_matrices.append(identity_matrix)
         else:
             moving_img, pad = pad_to_size2(target_shape, read_and_max_project(img_paths[i], ref_channel))
             padding.append(pad)
-            moving_img = cv.resize(moving_img, target_shape_resized, interpolation=cv.INTER_CUBIC)
-
-            transform_matrices.append(reg_features(reference_img, moving_img, scale))
+            transform_matrices.append(split_into_tiles_and_register(reference_img, moving_img))
         gc.collect()
     return transform_matrices, target_shape, padding
 
@@ -211,7 +144,7 @@ def transform_by_plane(input_file_paths, out_dir, target_shape, transform_matric
     except AttributeError:
         max_time, max_planes, max_channels = (1,1,1)
         new_meta = ''
-    no_transform_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    identity_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
 
     output_path = osp.join(out_dir, 'out.tif')
 
@@ -240,16 +173,17 @@ def transform_by_plane(input_file_paths, out_dir, target_shape, transform_matric
 
                             if img.shape != target_shape:
                                 img = pad_to_size(target_shape, img)
-                            if not np.array_equal(transform_matrix, no_transform_matrix):
-                                proper_transform_matrix = np.append(transform_matrix, [[0, 0, 1]], axis=0)
+                            if not np.array_equal(transform_matrix, identity_matrix):
+                                homogenous_transform_matrix = np.append(transform_matrix, [[0, 0, 1]], axis=0)
                                 try:
-                                    inv_matrix = np.linalg.inv(proper_transform_matrix)
+                                    inv_matrix = np.linalg.inv(homogenous_transform_matrix)
                                 except np.linalg.LinAlgError as err:
-                                    # if transformation matrix is singular - use partial inverse
-                                    inv_matrix = np.linalg.pinv(proper_transform_matrix)
+                                    print('Transformation matrix is singular. Using partial inverse')
+                                    inv_matrix = np.linalg.pinv(homogenous_transform_matrix)
 
-                                skimage_affine_transform = AffineTransform(inv_matrix)
-                                img = warp(img, skimage_affine_transform, output_shape=img.shape, preserve_range=True).astype(original_dtype)
+                                AT = AffineTransform(inv_matrix)
+                                img = warp(img, AT, output_shape=img.shape, preserve_range=True).astype(original_dtype)
+                                #img = cv.warpAffine(img, transform_matrix, (img.shape[1], img.shape[0]), None)
 
                             TW.save(img, photometric='minisblack', description=new_meta)
                             page += 1
@@ -262,7 +196,7 @@ def transform_by_plane(input_file_paths, out_dir, target_shape, transform_matric
 
 
 def main(img_paths: list, ref_img_id: int, ref_channel: str,
-         out_dir: str, scale: float, estimate_only: bool, load_param: str):
+         out_dir: str, estimate_only: bool, load_param: str):
 
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
@@ -273,7 +207,7 @@ def main(img_paths: list, ref_img_id: int, ref_channel: str,
     print('\nstarted', st)
 
     if load_param == 'none':
-        transform_matrices, target_shape, padding = estimate_registration_parameters(img_paths, ref_img_id, ref_channel, scale)
+        transform_matrices, target_shape, padding = estimate_registration_parameters(img_paths, ref_img_id, ref_channel)
     else:
         reg_param = pd.read_csv(load_param)
         target_shape = (reg_param.loc[0, 'height'], reg_param.loc[0, 'width'])
@@ -307,13 +241,10 @@ if __name__ == '__main__':
                         help='reference channel name, e.g. DAPI. Enclose in double quotes if name consist of several words e.g. "Atto 490LS".')
     parser.add_argument('-o', type=str, required=True,
                         help='directory to output registered image.')
-    parser.add_argument('-s', type=float, default=0.5,
-                        help='scale of the images during registration in fractions of 1. 1-full scale, 0.5 - half scale. '
-                             'Default value is 0.5.')
     parser.add_argument('--estimate_only', action='store_true',
                         help='add this flag if you want to get only registration parameters and do not want to process images.')
     parser.add_argument('--load_param', type=str, default='none',
                         help='specify path to csv file with registration parameters')
 
     args = parser.parse_args()
-    main(args.i, args.r, args.c, args.o, args.s, args.estimate_only, args.load_param)
+    main(args.i, args.r, args.c, args.o, args.estimate_only, args.load_param)
