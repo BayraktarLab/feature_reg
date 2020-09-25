@@ -1,8 +1,9 @@
 import copy
 
 import numpy as np
+import dask
 import cv2 as cv
-
+import tifffile as tif
 Image = np.ndarray
 
 
@@ -40,10 +41,9 @@ def diff_of_gaus(img: Image, low_sigma: int = 5, high_sigma: int = 9):
         return float_to_img(diff, original_dtype)
 
 
-def preprocess_image(img):
+def preprocess_image(img: Image):
     # TODO try to use opencv retina module
-
-    processed_img = diff_of_gaus(img, 5, 9)
+    processed_img = diff_of_gaus(img, 3, 5)
     if processed_img.dtype != np.uint8:
         processed_img = cv.normalize(processed_img, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
 
@@ -55,7 +55,7 @@ def find_features(img):
     processed_img = preprocess_image(img)
     if processed_img.max() == 0:
         return [], []
-    # create feature detector and keypoint descriptors
+    #detector = cv.MSER_create()  # mser gives more precise results
     detector = cv.FastFeatureDetector_create()
     descriptor = cv.xfeatures2d.DAISY_create()
     kp = detector.detect(processed_img)
@@ -69,9 +69,10 @@ def find_features(img):
     return kp, des
 
 
-def register_pair(img1_kp_des, img2_kp_des):
+def register_pair(img1_kp_des, img2_kp_des, ref_img, mov_img, img_id):
     kp1, des1 = img1_kp_des
     kp2, des2 = img2_kp_des
+    
     matcher = cv.FlannBasedMatcher_create()
     matches = matcher.knnMatch(des2, des1, k=2)
 
@@ -84,12 +85,52 @@ def register_pair(img1_kp_des, img2_kp_des):
     #print('good matches', len(good), '/', len(matches))
     if len(good) < 3:
         return None
-
     # convert keypoints to format acceptable for estimator
     src_pts = np.float32([kp1[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
     dst_pts = np.float32([kp2[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
 
     # find out how images shifted (compute affine transformation)
-    affine_transform_matrix, mask = cv.estimateAffinePartial2D(dst_pts, src_pts, method=cv.RANSAC, confidence=0.95)
+    affine_transform_matrix, mask = cv.estimateAffinePartial2D(dst_pts, src_pts, method=cv.RANSAC, confidence=0.99)
     return {'reg_transform': affine_transform_matrix, 'matches': len(matches), 'good_matches': len(good)}
 
+
+def find_features_parallelized(tile_list):
+    task = []
+    for tile in tile_list:
+        task.append(dask.delayed(find_features)(tile))
+    tiles_features = dask.compute(*task)
+    return tiles_features
+
+
+def register_pairs_parallelized(ref_tiles_features, mov_tiles_features, ref_tile_imgs, mov_tile_imgs):
+    """ Run feature matching algorithm for reference and moving tiles """
+    results = {i: {} for i in range(0, len(mov_tiles_features))}
+
+    # if pair is valid add its information to the dask tasks else delete key
+    task = []
+    task_id = 0
+    for m, mov_tile in enumerate(mov_tiles_features):
+        if mov_tile != ([], []):
+            delayed_mov_tile = dask.delayed(mov_tile)
+            delayed_mov_img = dask.delayed(cv.normalize(mov_tile_imgs[m], None, 0, 255, cv.NORM_MINMAX, cv.CV_8U))
+            for r, ref_tile in enumerate(ref_tiles_features):
+                if ref_tile != ([], []):
+                    results[m].update({r: task_id})
+                    img_id = str(m) + '_' + str(r) + '_'
+                    task.append(dask.delayed(register_pair)(ref_tile, delayed_mov_tile, cv.normalize(ref_tile_imgs[r], None, 0, 255, cv.NORM_MINMAX, cv.CV_8U), delayed_mov_img, img_id))
+                    task_id += 1
+        else:
+            del results[m]
+
+    if task != []:
+        matching_results = dask.compute(*task)
+    else:
+        raise ValueError('No tile matches were found')
+
+    # find which pairs had been processed by checking if they have task id
+    for mov_tile, ref_tiles in results.items():
+        for ref_tile in list(ref_tiles):
+            this_ref_tile_task_id = ref_tiles[ref_tile]
+            results[mov_tile][ref_tile] = matching_results[this_ref_tile_task_id]
+
+    return results

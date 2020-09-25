@@ -1,60 +1,26 @@
 import numpy as np
-import dask
+import cv2 as cv
+import tifffile as tif
+from skimage.transform import AffineTransform, warp, warp_polar
 
 from slicer import split_image_into_number_of_blocks
-from feature_detection import find_features, register_pair
+from feature_detection import find_features_parallelized, register_pairs_parallelized
+from filtering import filter_outliers
 
 
-def split_image_into_tiles(img, x_ntiles, y_ntiles):
+def split_image_into_tiles(img):
+    ntiles = 4
+    x_ntiles = ntiles
+    y_ntiles = ntiles
+
     img_tiles = split_image_into_number_of_blocks(img, x_ntiles, y_ntiles, overlap=0)
     return img_tiles
-
-
-def find_features_parallelized(tile_list):
-    task = []
-    for tile in tile_list:
-        task.append(dask.delayed(find_features)(tile))
-    tiles_features = dask.compute(*task)
-    return tiles_features
-
-
-def register_pairs_parallelized(ref_tiles_features, mov_tiles_features):
-    """ Run feature matching algorithm for reference and moving tiles """
-    results = {i: {} for i in range(0, len(mov_tiles_features))}
-
-    # if pair is valid add its information to the dask tasks else delete key
-    task = []
-    task_id = 0
-    for m, mov_tile in enumerate(mov_tiles_features):
-        if mov_tile != ([], []):
-            delayed_mov_tile = dask.delayed(mov_tile)
-            for r, ref_tile in enumerate(ref_tiles_features):
-                if ref_tile != ([], []):
-                    results[m].update({r: task_id})
-                    task.append(dask.delayed(register_pair)(ref_tile, delayed_mov_tile))
-                    task_id += 1
-        else:
-            del results[m]
-
-    if task != []:
-        matching_results = dask.compute(*task)
-    else:
-        raise ValueError('No tile matches were found')
-
-    # find which pairs had been processed by checking if they have task id
-    for mov_tile, ref_tiles in results.items():
-        for ref_tile in list(ref_tiles):
-            this_ref_tile_task_id = ref_tiles[ref_tile]
-            results[mov_tile][ref_tile] = matching_results[this_ref_tile_task_id]
-
-    return results
 
 
 def register_tiles(ref_img_tiles, mov_img_tiles):
     ref_tiles_features = find_features_parallelized(ref_img_tiles)
     mov_tiles_features = find_features_parallelized(mov_img_tiles)
-    del ref_img_tiles, mov_img_tiles
-    registration_results = register_pairs_parallelized(ref_tiles_features, mov_tiles_features)
+    registration_results = register_pairs_parallelized(ref_tiles_features, mov_tiles_features, ref_img_tiles, mov_img_tiles)
     return registration_results
 
 
@@ -133,65 +99,13 @@ def convert_transform_matrices(best_matches):
     return global_transform_matrices
 
 
-def zscore_filter_stack(arr):
-    z_scores = np.abs((arr - np.mean(arr, axis=0)) / np.std(arr, axis=0))
-    mask = z_scores < 1
-    inliers = np.argwhere(np.all(mask, axis=1) == True)
-    inlier_ids = [i[0] for i in inliers.tolist()]
-    if len(inlier_ids) > 0:
-        result = np.median(arr[inlier_ids, :], axis=0)
-    else:
-        result = np.array([])
-    return result
-
-
-def iqr_filter_stack(arr):
-    q1 = np.quantile(arr, 0.25, axis=0)
-    q3 = np.quantile(arr, 0.75, axis=0)
-
-    mask = np.bitwise_and(arr >= q1,  arr <= q3)
-    inliers = np.argwhere(np.all(mask, axis=1) == True)
-    inlier_ids = [i[0] for i in inliers.tolist()]
-    if len(inlier_ids) > 0:
-        result = np.median(arr[inlier_ids, :], axis=0)
-    else:
-       result = np.array([])
-    return result
-
-
-def filter_outliers(matrix_list):
-    matrices_raveled = [m.ravel() for m in matrix_list]
-    matrix_stack = np.stack(matrices_raveled)
-
-    iqr_res = iqr_filter_stack(matrix_stack)
-    zscore_res = zscore_filter_stack(matrix_stack)
-    print('IQR', iqr_res)
-    print('z-score', zscore_res)
-    if iqr_res.size != 0 and zscore_res.size != 0:
-        filtered_transformation_matrix = np.mean([iqr_res, zscore_res], axis=0).reshape((2, 3))
-    elif iqr_res.size == 0 and zscore_res.size != 0:
-        filtered_transformation_matrix = zscore_res.reshape((2, 3))
-    elif iqr_res.size != 0 and zscore_res.size == 0:
-        filtered_transformation_matrix = iqr_res.reshape((2, 3))
-    else:
-        raise ValueError('No proper alignment was found')
-    print(filtered_transformation_matrix)
-    return filtered_transformation_matrix
-
-
 def split_into_tiles_and_register(img1, img2):
-    ntiles = max(max(img1.shape) // 1000 // 2, 2)
-    x_ntiles = ntiles
-    y_ntiles = ntiles
-
-    img1_tiles, info_img1 = split_image_into_tiles(img1, x_ntiles, y_ntiles)
-    img2_tiles, info_img2 = split_image_into_tiles(img2, x_ntiles, y_ntiles)
-    del img2
-    print(info_img2)
-
-    x_ntiles = info_img2['nblocks']['x']
-    y_ntiles = info_img2['nblocks']['y']
-    tile_size_y, tile_size_x = info_img2['block_shape']
+    img1_tiles, img1_tile_info = split_image_into_tiles(img1)
+    img2_tiles, img2_tile_info = split_image_into_tiles(img2)
+    
+    x_ntiles = img2_tile_info['nblocks']['x']
+    y_ntiles = img2_tile_info['nblocks']['y']
+    tile_size_y, tile_size_x = img2_tile_info['block_shape']
 
     result = register_tiles(img1_tiles, img2_tiles)  # will delete tiles inside function
     best_matches = find_best_matched_tiles(result)
@@ -202,4 +116,3 @@ def split_into_tiles_and_register(img1, img2):
     final_transformation_matrix = filter_outliers(global_matrices)
 
     return final_transformation_matrix
-
