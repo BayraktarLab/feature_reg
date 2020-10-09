@@ -3,7 +3,6 @@ import copy
 import numpy as np
 import dask
 import cv2 as cv
-import tifffile as tif
 Image = np.ndarray
 
 
@@ -55,10 +54,17 @@ def find_features(img):
     processed_img = preprocess_image(img)
     if processed_img.max() == 0:
         return [], []
-    #detector = cv.MSER_create()  # mser gives more precise results
-    detector = cv.FastFeatureDetector_create()
+    #detector = cv.MSER_create()
+    detector = cv.FastFeatureDetector_create(1, True)
     descriptor = cv.xfeatures2d.DAISY_create()
     kp = detector.detect(processed_img)
+
+    # get 1000 best points based on feature detector response
+    if len(kp) <= 3000:
+        pass
+    else:
+        kp = sorted(kp, key=lambda x: x.response, reverse=True)[:3000]
+
     kp, des = descriptor.compute(processed_img, kp)
 
     if kp is None or len(kp) < 3:
@@ -69,20 +75,21 @@ def find_features(img):
     return kp, des
 
 
-def register_pair(img1_kp_des, img2_kp_des, ref_img, mov_img, img_id):
+def register_pair(img1_kp_des, img2_kp_des):
     kp1, des1 = img1_kp_des
     kp2, des2 = img2_kp_des
-    
+
     matcher = cv.FlannBasedMatcher_create()
     matches = matcher.knnMatch(des2, des1, k=2)
 
+    print(len(matches))
     # Filter out unreliable points
     good = []
     for m, n in matches:
         if m.distance < 0.5 * n.distance:
             good.append(m)
 
-    #print('good matches', len(good), '/', len(matches))
+    print('good matches', len(good), '/', len(matches))
     if len(good) < 3:
         return None
     # convert keypoints to format acceptable for estimator
@@ -100,37 +107,3 @@ def find_features_parallelized(tile_list):
         task.append(dask.delayed(find_features)(tile))
     tiles_features = dask.compute(*task)
     return tiles_features
-
-
-def register_pairs_parallelized(ref_tiles_features, mov_tiles_features, ref_tile_imgs, mov_tile_imgs):
-    """ Run feature matching algorithm for reference and moving tiles """
-    results = {i: {} for i in range(0, len(mov_tiles_features))}
-
-    # if pair is valid add its information to the dask tasks else delete key
-    task = []
-    task_id = 0
-    for m, mov_tile in enumerate(mov_tiles_features):
-        if mov_tile != ([], []):
-            delayed_mov_tile = dask.delayed(mov_tile)
-            delayed_mov_img = dask.delayed(cv.normalize(mov_tile_imgs[m], None, 0, 255, cv.NORM_MINMAX, cv.CV_8U))
-            for r, ref_tile in enumerate(ref_tiles_features):
-                if ref_tile != ([], []):
-                    results[m].update({r: task_id})
-                    img_id = str(m) + '_' + str(r) + '_'
-                    task.append(dask.delayed(register_pair)(ref_tile, delayed_mov_tile, cv.normalize(ref_tile_imgs[r], None, 0, 255, cv.NORM_MINMAX, cv.CV_8U), delayed_mov_img, img_id))
-                    task_id += 1
-        else:
-            del results[m]
-
-    if task != []:
-        matching_results = dask.compute(*task)
-    else:
-        raise ValueError('No tile matches were found')
-
-    # find which pairs had been processed by checking if they have task id
-    for mov_tile, ref_tiles in results.items():
-        for ref_tile in list(ref_tiles):
-            this_ref_tile_task_id = ref_tiles[ref_tile]
-            results[mov_tile][ref_tile] = matching_results[this_ref_tile_task_id]
-
-    return results
