@@ -1,8 +1,8 @@
 import copy
 
 import numpy as np
+import dask
 import cv2 as cv
-
 Image = np.ndarray
 
 
@@ -40,10 +40,9 @@ def diff_of_gaus(img: Image, low_sigma: int = 5, high_sigma: int = 9):
         return float_to_img(diff, original_dtype)
 
 
-def preprocess_image(img):
+def preprocess_image(img: Image):
     # TODO try to use opencv retina module
-
-    processed_img = diff_of_gaus(img, 5, 9)
+    processed_img = diff_of_gaus(img, 3, 5)
     if processed_img.dtype != np.uint8:
         processed_img = cv.normalize(processed_img, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
 
@@ -55,10 +54,17 @@ def find_features(img):
     processed_img = preprocess_image(img)
     if processed_img.max() == 0:
         return [], []
-    # create feature detector and keypoint descriptors
-    detector = cv.FastFeatureDetector_create()
+    #detector = cv.MSER_create()
+    detector = cv.FastFeatureDetector_create(1, True)
     descriptor = cv.xfeatures2d.DAISY_create()
     kp = detector.detect(processed_img)
+
+    # get 1000 best points based on feature detector response
+    if len(kp) <= 3000:
+        pass
+    else:
+        kp = sorted(kp, key=lambda x: x.response, reverse=True)[:3000]
+
     kp, des = descriptor.compute(processed_img, kp)
 
     if kp is None or len(kp) < 3:
@@ -72,24 +78,32 @@ def find_features(img):
 def register_pair(img1_kp_des, img2_kp_des):
     kp1, des1 = img1_kp_des
     kp2, des2 = img2_kp_des
+
     matcher = cv.FlannBasedMatcher_create()
     matches = matcher.knnMatch(des2, des1, k=2)
 
+    print(len(matches))
     # Filter out unreliable points
     good = []
     for m, n in matches:
         if m.distance < 0.5 * n.distance:
             good.append(m)
 
-    #print('good matches', len(good), '/', len(matches))
+    print('good matches', len(good), '/', len(matches))
     if len(good) < 3:
         return None
-
     # convert keypoints to format acceptable for estimator
     src_pts = np.float32([kp1[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
     dst_pts = np.float32([kp2[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
 
     # find out how images shifted (compute affine transformation)
-    affine_transform_matrix, mask = cv.estimateAffinePartial2D(dst_pts, src_pts, method=cv.RANSAC, confidence=0.95)
+    affine_transform_matrix, mask = cv.estimateAffinePartial2D(dst_pts, src_pts, method=cv.RANSAC, confidence=0.99)
     return {'reg_transform': affine_transform_matrix, 'matches': len(matches), 'good_matches': len(good)}
 
+
+def find_features_parallelized(tile_list):
+    task = []
+    for tile in tile_list:
+        task.append(dask.delayed(find_features)(tile))
+    tiles_features = dask.compute(*task)
+    return tiles_features
