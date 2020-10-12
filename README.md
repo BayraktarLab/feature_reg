@@ -25,7 +25,7 @@ The script does tile based registration of images to avoid big memory consumptio
 
 ## Example usage
 
-`python reg.py -i "/path/to/image1/img1.tif" "/path/to/image2/img2.tif" -o  "/path/to/output/directory" -r 0 -c "Atto 490LS" -s 0.5`
+`python reg.py -i "/path/to/image1/img1.tif" "/path/to/image2/img2.tif" -o  "/path/to/output/directory" -r 0 -c "Atto 490LS" -n 3`
 
 ## Dependencies
 
