@@ -86,7 +86,7 @@ def find_features(img):
     return temp_kp_storage, des
 
 
-def register_pair(img1_kp_des, img2_kp_des):
+def match_features(img1_kp_des, img2_kp_des):
     kp1, des1 = img1_kp_des
     kp2, des2 = img2_kp_des
 
@@ -108,7 +108,7 @@ def register_pair(img1_kp_des, img2_kp_des):
 
     # find out how images shifted (compute affine transformation)
     affine_transform_matrix, mask = cv.estimateAffinePartial2D(dst_pts, src_pts, method=cv.RANSAC, confidence=0.99)
-    return {'reg_transform': affine_transform_matrix, 'matches': len(matches), 'good_matches': len(good)}
+    return affine_transform_matrix
 
 
 def find_features_parallelized(tile_list):

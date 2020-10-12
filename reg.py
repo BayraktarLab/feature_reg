@@ -13,7 +13,7 @@ import tifffile as tif
 import dask
 
 from metadata_handling import str_to_xml, extract_pixels_info, generate_new_metadata, find_ref_channel
-from tile_registration import split_into_tiles_and_register
+from tile_registration import get_features, register_img_pair
 
 
 def alphaNumOrder(string):
@@ -119,9 +119,11 @@ def estimate_registration_parameters(img_paths, ref_img_id, ref_channel):
     max_size_y = max([s[0] for s in img_shapes])
     target_shape = (max_size_y, max_size_x)
 
+    # process reference image
     reference_img = read_and_max_project(ref_img_path, ref_channel)
     reference_img, pad = pad_to_size2(target_shape, reference_img)
     padding.append(pad)
+    ref_features = get_features(reference_img)
     gc.collect()
 
     for i in range(0, nimgs):
@@ -132,7 +134,8 @@ def estimate_registration_parameters(img_paths, ref_img_id, ref_channel):
         else:
             moving_img, pad = pad_to_size2(target_shape, read_and_max_project(img_paths[i], ref_channel))
             padding.append(pad)
-            transform_matrices.append(split_into_tiles_and_register(reference_img, moving_img))
+            transform_matrix = register_img_pair(ref_features, get_features(moving_img))
+            transform_matrices.append(transform_matrix)
         gc.collect()
     return transform_matrices, target_shape, padding
 
