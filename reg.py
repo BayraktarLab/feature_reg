@@ -10,6 +10,7 @@ from skimage.transform import AffineTransform, warp
 import pandas as pd
 import cv2 as cv
 import tifffile as tif
+import dask
 
 from metadata_handling import str_to_xml, extract_pixels_info, generate_new_metadata, find_ref_channel
 from tile_registration import split_into_tiles_and_register
@@ -196,7 +197,7 @@ def transform_by_plane(input_file_paths, out_dir, target_shape, transform_matric
 
 
 def main(img_paths: list, ref_img_id: int, ref_channel: str,
-         out_dir: str, estimate_only: bool, load_param: str):
+         out_dir: str, n_workers: int, estimate_only: bool, load_param: str):
 
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
@@ -205,6 +206,12 @@ def main(img_paths: list, ref_img_id: int, ref_channel: str,
 
     st = datetime.now()
     print('\nstarted', st)
+
+    if n_workers == 1:
+        dask.config.set({'scheduler': 'synchronous'})
+    else:
+        dask.config.set({'num_workers': n_workers, 'scheduler': 'processes'})
+
 
     if load_param == 'none':
         transform_matrices, target_shape, padding = estimate_registration_parameters(img_paths, ref_img_id, ref_channel)
@@ -241,10 +248,12 @@ if __name__ == '__main__':
                         help='reference channel name, e.g. DAPI. Enclose in double quotes if name consist of several words e.g. "Atto 490LS".')
     parser.add_argument('-o', type=str, required=True,
                         help='directory to output registered image.')
+    parser.add_argument('-n', type=int, default=1,
+                        help='multiprocessing: number of processes, default 1')
     parser.add_argument('--estimate_only', action='store_true',
                         help='add this flag if you want to get only registration parameters and do not want to process images.')
     parser.add_argument('--load_param', type=str, default='none',
                         help='specify path to csv file with registration parameters')
 
     args = parser.parse_args()
-    main(args.i, args.r, args.c, args.o, args.estimate_only, args.load_param)
+    main(args.i, args.r, args.c, args.o, args.n, args.estimate_only, args.load_param)
