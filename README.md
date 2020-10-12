@@ -16,6 +16,8 @@ The script does tile based registration of images to avoid big memory consumptio
 
 **`-o`**    directory to output registered image.
 
+**`-n`**    multiprocessing: number of processes, default 1
+
 **`--estimate_only`**   add this flag if you want to get only registration parameters and do not want to process images.
 
 **`--load_param`**  specify path to csv file with registration parameters
@@ -23,7 +25,7 @@ The script does tile based registration of images to avoid big memory consumptio
 
 ## Example usage
 
-`python reg.py -i "/path/to/image1/img1.tif" "/path/to/image2/img2.tif" -o  "/path/to/output/directory" -r 0 -c "Atto 490LS" -s 0.5`
+`python reg.py -i "/path/to/image1/img1.tif" "/path/to/image2/img2.tif" -o  "/path/to/output/directory" -r 0 -c "Atto 490LS" -n 3`
 
 ## Dependencies
 

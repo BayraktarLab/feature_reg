@@ -3,6 +3,7 @@ import copy
 import numpy as np
 import dask
 import cv2 as cv
+import copyreg
 Image = np.ndarray
 
 
@@ -49,6 +50,11 @@ def preprocess_image(img: Image):
     return processed_img
 
 
+def _pickle_keypoints(point):
+    return cv.KeyPoint, (*point.pt, point.size, point.angle,
+                          point.response, point.octave, point.class_id)
+
+
 def find_features(img):
 
     processed_img = preprocess_image(img)
@@ -72,17 +78,21 @@ def find_features(img):
     if des is None or len(des) < 3:
         return [], []
 
-    return kp, des
+    #fix problem with pickle
+    temp_kp_storage = []
+    for point in kp:
+        temp_kp_storage.append((point.pt, point.size, point.angle, point.response, point.octave, point.class_id))
+
+    return temp_kp_storage, des
 
 
-def register_pair(img1_kp_des, img2_kp_des):
+def match_features(img1_kp_des, img2_kp_des):
     kp1, des1 = img1_kp_des
     kp2, des2 = img2_kp_des
 
     matcher = cv.FlannBasedMatcher_create()
     matches = matcher.knnMatch(des2, des1, k=2)
 
-    print(len(matches))
     # Filter out unreliable points
     good = []
     for m, n in matches:
@@ -98,7 +108,7 @@ def register_pair(img1_kp_des, img2_kp_des):
 
     # find out how images shifted (compute affine transformation)
     affine_transform_matrix, mask = cv.estimateAffinePartial2D(dst_pts, src_pts, method=cv.RANSAC, confidence=0.99)
-    return {'reg_transform': affine_transform_matrix, 'matches': len(matches), 'good_matches': len(good)}
+    return affine_transform_matrix
 
 
 def find_features_parallelized(tile_list):
