@@ -64,12 +64,6 @@ def calculate_padding_size(bigger_shape, smaller_shape):
 def pad_to_size(target_shape, img):
     left, right = calculate_padding_size(target_shape[1], img.shape[1])
     top, bottom = calculate_padding_size(target_shape[0], img.shape[0])
-    return cv.copyMakeBorder(img, top, bottom, left, right, cv.BORDER_CONSTANT, None, 0)
-
-
-def pad_to_size2(target_shape, img):
-    left, right = calculate_padding_size(target_shape[1], img.shape[1])
-    top, bottom = calculate_padding_size(target_shape[0], img.shape[0])
     return cv.copyMakeBorder(img, top, bottom, left, right, cv.BORDER_CONSTANT, None, 0), (left, right, top, bottom)
 
 
@@ -121,7 +115,7 @@ def estimate_registration_parameters(img_paths, ref_img_id, ref_channel):
 
     # process reference image
     reference_img = read_and_max_project(ref_img_path, ref_channel)
-    reference_img, pad = pad_to_size2(target_shape, reference_img)
+    reference_img, pad = pad_to_size(target_shape, reference_img)
     padding.append(pad)
     ref_features = get_features(reference_img)
     gc.collect()
@@ -132,7 +126,7 @@ def estimate_registration_parameters(img_paths, ref_img_id, ref_channel):
             identity_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
             transform_matrices.append(identity_matrix)
         else:
-            moving_img, pad = pad_to_size2(target_shape, read_and_max_project(img_paths[i], ref_channel))
+            moving_img, pad = pad_to_size(target_shape, read_and_max_project(img_paths[i], ref_channel))
             padding.append(pad)
             transform_matrix = register_img_pair(ref_features, get_features(moving_img))
             transform_matrices.append(transform_matrix)
@@ -176,7 +170,7 @@ def transform_by_plane(input_file_paths, out_dir, target_shape, transform_matric
                             original_dtype = img.dtype
 
                             if img.shape != target_shape:
-                                img = pad_to_size(target_shape, img)
+                                img, _ = pad_to_size(target_shape, img)
                             if not np.array_equal(transform_matrix, identity_matrix):
                                 homogenous_transform_matrix = np.append(transform_matrix, [[0, 0, 1]], axis=0)
                                 try:
