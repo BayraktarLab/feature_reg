@@ -1,8 +1,10 @@
 import xml.etree.ElementTree as ET
 from io import StringIO
 import re
+from typing import List
 
 from tifffile import TiffFile
+XML = ET.ElementTree
 
 
 def str_to_xml(xmlstr: str):
@@ -14,38 +16,129 @@ def str_to_xml(xmlstr: str):
     return root
 
 
-def extract_pixels_info(xml):
-    dims = ['SizeX', 'SizeY', 'SizeC', 'SizeZ', 'SizeT']
-    sizes = ['PhysicalSizeX', 'PhysicalSizeY']
-    pixels = xml.find('Image').find('Pixels')
-    pixels_info = dict()
-    for d in dims:
-        pixels_info[d] = int(pixels.get(d, default=1))
-    for s in sizes:
-        pixels_info[s] = float(pixels.get(s, default=1))
-    return pixels_info
-
-
-def extract_channel_info(xml):
-    channels = xml.find('Image').find('Pixels').findall('Channel')
+def extract_channel_info(ome_xml: XML):
+    channels = ome_xml.find('Image').find('Pixels').findall('Channel')
     channel_names = [ch.get('Name') for ch in channels]
     channel_ids = [ch.get('ID') for ch in channels]
     channel_fluors = []
     for ch in channels:
         if 'Fluor' in ch.attrib:
             channel_fluors.append(ch.get('Fluor'))
-    return channels, channel_names, channel_ids, channel_fluors
+    image_attribs = ome_xml.find('Image').find('Pixels').attrib
+    nchannels = int(image_attribs.get('SizeC', 1))
+    nzplanes = int(image_attribs.get('SizeZ', 1))
+    return channels, channel_names, channel_ids, channel_fluors, nchannels, nzplanes
 
 
-def get_dimension_size(img_axes, img_shape):
-    dims = {'T': 1, 'Z': 1, 'C': 1}
+def extract_pixels_info(ome_xml: XML):
+    dims = ['SizeX', 'SizeY', 'SizeC', 'SizeZ', 'SizeT']
+    sizes = ['PhysicalSizeX', 'PhysicalSizeY']
+    pixels = ome_xml.find('Image').find('Pixels')
+    pixels_info = dict()
     for d in dims:
-        if d in img_axes:
-            idx = img_axes.index(d)
-            dim_size = img_shape[idx]
-            dims[d] = dim_size
+        pixels_info[d] = int(pixels.get(d, 1))
+    for s in sizes:
+        pixels_info[s] = float(pixels.get(s, 1))
+    return pixels_info
 
-    return dims
+
+def find_where_ref_channel(ome_xml: XML, ref_channel: str):
+    """ Find if reference channel is in fluorophores or channel names and return them"""
+    channels, channel_names, channel_ids, channel_fluors, _, _ = extract_channel_info(ome_xml)
+
+    channel_fluors = [fluor.lower() for fluor in channel_fluors]
+    channel_names = [name.lower() for name in channel_names]
+
+    # strip cycle id from channel name and fluor name
+    if channel_fluors != []:
+        fluors = [re.sub(r'^(c|cyc|cycle)\d+(\s+|_)', '', fluor) for fluor in channel_fluors]  # remove cycle name
+    else:
+        fluors = None
+    names = [re.sub(r'^(c|cyc|cycle)\d+(\s+|_)', '', name) for name in channel_names]
+
+    # check if reference channel is present somewhere
+    if ref_channel in names:
+        matches = names
+    elif fluors is not None and ref_channel in fluors:
+        matches = fluors
+    else:
+        if fluors is not None:
+            message = 'Incorrect reference channel. Available channel names: {names}, fluors: {fluors}'
+            raise ValueError(message.format(names=', '.join(set(names)), fluors=', '.join(set(fluors))))
+        else:
+            message = 'Incorrect reference channel. Available channel names: {names}'
+            raise ValueError(message.format(names=', '.join(set(names))))
+
+    return matches
+
+
+def get_info_from_ome_meta(img_path: str, ref_channel: str, is_stack: bool):
+    with TiffFile(img_path) as TF:
+        ome_meta_str = TF.ome_metadata
+    ome_xml = str_to_xml(ome_meta_str)
+    matches = find_where_ref_channel(ome_xml, ref_channel)
+    channels, _, _, _, nchannels, nzplanes = extract_channel_info(ome_xml)
+
+    ref_channel_ids = [_id for _id, ch in enumerate(matches) if ch == ref_channel]
+    total_channels = len(channels)
+    if is_stack:
+        nchannels_per_cycle = ref_channel_ids[1] - ref_channel_ids[0]
+        ncycles = total_channels // nchannels_per_cycle
+    else:
+        nchannels_per_cycle = total_channels
+        ncycles = 1
+
+    return ncycles, nchannels_per_cycle, nzplanes, ref_channel_ids[0]
+
+
+def get_img_list_structure(img_paths: List[str], ref_channel: str):
+    img_list_structure = dict()
+
+    for cyc, path in enumerate(img_paths):
+        _, nchannels, nzplanes, ref_channel_id = get_info_from_ome_meta(path, ref_channel, is_stack=False)
+
+        img_structure = dict()
+        img_list_structure[cyc] = dict()
+        tiff_page = 0
+
+        for ch in range(0, nchannels):
+            img_structure[ch] = dict()
+            for z in range(0, nzplanes):
+                img_structure[ch][z] = tiff_page
+                tiff_page += 1
+
+        img_list_structure[cyc]['img_structure'] = img_structure
+        img_list_structure[cyc]['ref_channel_id'] = ref_channel_id
+        img_list_structure[cyc]['img_path'] = path
+
+    return img_list_structure
+
+
+def get_stack_structure(img_path: str, ref_channel: str):
+    ncycles, nchannels, nzplanes, ref_channel_id = get_info_from_ome_meta(img_path, ref_channel, is_stack=True)
+
+    stack_structure = dict()
+    tiff_page = 0
+    for cyc in range(0, ncycles):
+        img_structure = dict()
+        stack_structure[cyc] = dict()
+        for ch in range(0, nchannels):
+            img_structure[ch] = dict()
+            for z in range(0, nzplanes):
+                img_structure[ch][z] = tiff_page
+                tiff_page += 1
+        stack_structure[cyc]['img_structure'] = img_structure
+        stack_structure[cyc]['ref_channel_id'] = ref_channel_id
+        stack_structure[cyc]['img_path'] = img_path
+
+    return stack_structure
+
+
+def get_dataset_structure(img_paths: List[str], ref_channel: str, is_stack: bool):
+    if is_stack:
+        return get_stack_structure(img_paths[0], ref_channel)
+    else:
+        return get_img_list_structure(img_paths, ref_channel)
 
 
 def generate_new_metadata(img_paths, target_shape):
@@ -115,12 +208,12 @@ def generate_new_metadata(img_paths, target_shape):
         for td in tiffdata:
             ref_xml.find('Image').find('Pixels').remove(td)
 
-
     # add new channels
     write_format = '0' + str(len(str(ncycles)) + 1) + 'd'  # e.g. for number 5 format = 02d, result = 05
     channel_id = 0
     for i in range(0, ncycles):
-        channels, channel_names, channel_ids, channel_fluors = extract_channel_info(str_to_xml(metadata_list[i]))
+        channels, channel_names, channel_ids, channel_fluors, num_channels_per_cycle, num_zplanes_per_channel = extract_channel_info(str_to_xml(metadata_list[i]))
+
         cycle_name = 'c' + format(i+1, write_format) + ' '
         new_channel_names = [cycle_name + ch for ch in channel_names]
 
@@ -131,7 +224,6 @@ def generate_new_metadata(img_paths, target_shape):
             channels[ch].set('ID', new_channel_id)
             ref_xml.find('Image').find('Pixels').append(channels[ch])
             channel_id += 1
-
 
     # add new tiffdata
     ifd = 0
@@ -144,40 +236,4 @@ def generate_new_metadata(img_paths, target_shape):
     xml_declaration = '<?xml version="1.0" encoding="UTF-8"?>'
     result_ome_meta = xml_declaration + ET.tostring(ref_xml, method='xml', encoding='utf-8').decode('ascii', errors='ignore')
 
-    return max_time, max_planes, total_channels, result_ome_meta
-
-
-def find_ref_channel(ome_meta, ref_channel):
-    # find selected reference channels in ome metadata
-    if ome_meta is None:
-        print('No OME XML detected. Using first channel')
-        return 0
-
-    channels, channel_names, channel_ids, channel_fluors = extract_channel_info(str_to_xml(ome_meta))
-
-    # strip cycle id from channel name and fluor name
-    if channel_fluors != []:
-        fluors = [re.sub(r'^(c|cyc|cycle)\d+(\s+|_)', '', fluor) for fluor in channel_fluors]  # remove cycle name
-    else:
-        fluors = None
-    names = [re.sub(r'^(c|cyc|cycle)\d+(\s+|_)', '', name) for name in channel_names]
-
-    # check if reference channel is present somewhere
-    if ref_channel in names:
-        matches = names
-    elif fluors is not None and ref_channel in fluors:
-        matches = fluors
-    else:
-        if fluors is not None:
-            message = 'Incorrect reference channel. Available channel names: {names}, fluors: {fluors}'
-            raise ValueError(message.format(names=', '.join(set(names)), fluors=', '.join(set(fluors))))
-        else:
-            message = 'Incorrect reference channel. Available channel names: {names}'
-            raise ValueError(message.format(names=', '.join(set(names))))
-
-    # get position of reference channel in cycle
-    for i, channel in enumerate(matches):
-        if channel == ref_channel:
-            ref_channel_id = i
-
-    return ref_channel_id
+    return result_ome_meta
