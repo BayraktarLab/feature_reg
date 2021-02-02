@@ -2,7 +2,7 @@ import numpy as np
 import cv2 as cv
 
 
-from slicer import split_image_into_number_of_blocks
+from slicer import split_image_into_number_of_tiles
 from feature_detection import find_features_parallelized, match_features
 
 
@@ -10,8 +10,7 @@ def split_image_into_tiles(img):
     ntiles = 4
     x_ntiles = ntiles
     y_ntiles = ntiles
-
-    img_tiles = split_image_into_number_of_blocks(img, x_ntiles, y_ntiles, overlap=0)
+    img_tiles = split_image_into_number_of_tiles(img, x_ntiles, y_ntiles, overlap=0)
     return img_tiles
 
 
@@ -37,9 +36,9 @@ def combine_features(features, x_ntiles, y_ntiles, tile_size_x, tile_size_y):
 def get_features(img):
     img_tiles, img_tile_info = split_image_into_tiles(img)
 
-    x_ntiles = img_tile_info['nblocks']['x']
-    y_ntiles = img_tile_info['nblocks']['y']
-    tile_size_y, tile_size_x = img_tile_info['block_shape']
+    x_ntiles = img_tile_info['ntiles']['x']
+    y_ntiles = img_tile_info['ntiles']['y']
+    tile_size_y, tile_size_x = img_tile_info['tile_shape']
 
     tiles_features = find_features_parallelized(img_tiles)
     del img_tiles
