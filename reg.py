@@ -4,6 +4,7 @@ import os.path as osp
 import gc
 import argparse
 from datetime import datetime
+from typing import List
 
 import numpy as np
 from skimage.transform import AffineTransform, warp
@@ -12,9 +13,10 @@ import cv2 as cv
 import tifffile as tif
 import dask
 
-from metadata_handling import str_to_xml, extract_pixels_info, generate_new_metadata, find_ref_channel
+from metadata_handling import generate_new_metadata, get_dataset_structure
 from tile_registration import get_features, register_img_pair
 
+Image = np.ndarray
 
 def alphaNumOrder(string):
     """ Returns all numbers on 5 digits to let sort the string with numeric order.
@@ -62,145 +64,147 @@ def calculate_padding_size(bigger_shape, smaller_shape):
 
 
 def pad_to_size(target_shape, img):
-    left, right = calculate_padding_size(target_shape[1], img.shape[1])
-    top, bottom = calculate_padding_size(target_shape[0], img.shape[0])
-    return cv.copyMakeBorder(img, top, bottom, left, right, cv.BORDER_CONSTANT, None, 0)
-
-
-def pad_to_size2(target_shape, img):
-    left, right = calculate_padding_size(target_shape[1], img.shape[1])
-    top, bottom = calculate_padding_size(target_shape[0], img.shape[0])
-    return cv.copyMakeBorder(img, top, bottom, left, right, cv.BORDER_CONSTANT, None, 0), (left, right, top, bottom)
-
-
-def read_and_max_project(path, ref_channel):
-    """ Iteratively load z planes to create max intensity projection"""
-    with tif.TiffFile(path) as TF:
-        img_axes = list(TF.series[0].axes)
-        img_shape = TF.series[0].shape
-        ome_meta = TF.ome_metadata
-    if len(img_shape) == 2 and ome_meta is None:
-        ref_channel_id = 0
+    if img.shape == target_shape:
+        return img, (0, 0, 0, 0)
     else:
-        ref_channel_id = find_ref_channel(ome_meta, ref_channel)
-
-    sizes = extract_pixels_info(str_to_xml(ome_meta))
-    nzplanes = sizes['SizeZ']
-    nchannels = sizes['SizeC']
-
-    start_reading_from = ref_channel_id * nzplanes
-    end_reading_at = start_reading_from + nzplanes
-
-    if nzplanes == 1:
-        # handle maxz projection where 1 z plane per channel
-        return cv.normalize(tif.imread(path, key=ref_channel_id), None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
-    else:
-        # initialize with first z plane
-        max_intensity = cv.normalize(tif.imread(path, key=start_reading_from), None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
-        for i in range(start_reading_from + 1, end_reading_at + 1):
-            max_intensity = np.maximum(max_intensity, tif.imread(path, key=i))
-
-    return max_intensity
+        left, right = calculate_padding_size(target_shape[1], img.shape[1])
+        top, bottom = calculate_padding_size(target_shape[0], img.shape[0])
+        return cv.copyMakeBorder(img, top, bottom, left, right, cv.BORDER_CONSTANT, None, 0), (left, right, top, bottom)
 
 
-def estimate_registration_parameters(img_paths, ref_img_id, ref_channel):
-    print('estimating registration parameters')
-    nimgs = len(img_paths)
+def read_and_max_project_pages(img_path: str, tiff_pages: List[int]):
+    max_proj = tif.imread(img_path, key=tiff_pages[0])
+
+    if len(tiff_pages) > 1:
+        del tiff_pages[0]
+        for p in tiff_pages:
+            max_proj = np.maximum(max_proj, tif.imread(img_path, key=p))
+
+    return cv.normalize(max_proj, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
+
+
+def estimate_registration_parameters(dataset_structure, ref_cycle_id):
     padding = []
     transform_matrices = []
     img_shapes = []
+    identity_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+
+    img_paths = [dataset_structure[cyc]['img_path'] for cyc in dataset_structure]
 
     for i in range(0, len(img_paths)):
         with tif.TiffFile(img_paths[i]) as TF:
             img_shapes.append(TF.series[0].shape[-2:])
 
-    ref_img_path = img_paths[ref_img_id]
     max_size_x = max([s[1] for s in img_shapes])
     max_size_y = max([s[0] for s in img_shapes])
     target_shape = (max_size_y, max_size_x)
 
-    # process reference image
-    reference_img = read_and_max_project(ref_img_path, ref_channel)
-    reference_img, pad = pad_to_size2(target_shape, reference_img)
+    ref_img_structure = dataset_structure[ref_cycle_id]['img_structure']
+    ref_img_ref_channel_id = dataset_structure[ref_cycle_id]['ref_channel_id']
+    ref_img_path = dataset_structure[ref_cycle_id]['img_path']
+
+    ref_img_tiff_pages = list(ref_img_structure[ref_img_ref_channel_id].values())
+    ref_img = read_and_max_project_pages(ref_img_path, ref_img_tiff_pages)
+    ref_img, pad = pad_to_size(target_shape, ref_img)
     padding.append(pad)
-    ref_features = get_features(reference_img)
+    ref_features = get_features(ref_img)
     gc.collect()
 
-    for i in range(0, nimgs):
-        print('image {0}/{1}'.format(i + 1, nimgs))
-        if i == ref_img_id:
-            identity_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    ncycles = len(dataset_structure.keys())
+
+    for cycle in dataset_structure:
+        print('image {0}/{1}'.format(cycle + 1, ncycles))
+        img_structure = dataset_structure[cycle]['img_structure']
+        ref_channel_id = dataset_structure[cycle]['ref_channel_id']
+        img_path = dataset_structure[cycle]['img_path']
+
+        if cycle == ref_cycle_id:
             transform_matrices.append(identity_matrix)
         else:
-            moving_img, pad = pad_to_size2(target_shape, read_and_max_project(img_paths[i], ref_channel))
+            mov_img_tiff_pages = list(img_structure[ref_channel_id].values())
+            mov_img = read_and_max_project_pages(img_path, mov_img_tiff_pages)
+
+            mov_img, pad = pad_to_size(target_shape, mov_img)
             padding.append(pad)
-            transform_matrix = register_img_pair(ref_features, get_features(moving_img))
+
+            transform_matrix = register_img_pair(ref_features, get_features(mov_img))
             transform_matrices.append(transform_matrix)
-        gc.collect()
+
+            gc.collect()
+
     return transform_matrices, target_shape, padding
 
 
-def transform_by_plane(input_file_paths, out_dir, target_shape, transform_matrices):
+def transform_imgs(dataset_structure, out_dir, target_shape, transform_matrices, is_stack):
     print('transforming images')
-    # try allows to work with images without omexml. Need to remove later
-    try:
-        max_time, max_planes, max_channels, new_meta = generate_new_metadata(input_file_paths, target_shape)
-    except AttributeError:
-        max_time, max_planes, max_channels = (1,1,1)
-        new_meta = ''
     identity_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
-
     output_path = osp.join(out_dir, 'out.tif')
 
-    with tif.TiffWriter(output_path, bigtiff=True) as TW:
+    input_img_paths = [dataset_structure[cyc]['img_path'] for cyc in dataset_structure]
 
-        for i, path in enumerate(input_file_paths):
-            print('image {0}/{1}'.format(i + 1, len(input_file_paths)))
+    if is_stack:
+        with tif.TiffFile(input_img_paths[0]) as TF:
+            old_meta = TF.ome_metadata
+        new_meta = old_meta
+    else:
+        new_meta = generate_new_metadata(input_img_paths, target_shape)
 
-            transform_matrix = transform_matrices[i]
+    ncycles = len(dataset_structure.keys())
+    nzplanes = {cyc: len(dataset_structure[cyc]['img_structure'][0].keys()) for cyc in dataset_structure}
+    max_zplanes = max(nzplanes.values())
 
-            with tif.TiffFile(path, is_ome=True) as TF:
-                img_axes = list(TF.series[0].axes)
-                img_shape = TF.series[0].shape
-                ome_meta = TF.ome_metadata
-                sizes = extract_pixels_info(str_to_xml(ome_meta))
-                ntime = sizes['SizeT']
-                nplanes = sizes['SizeZ']
-                nchannels = sizes['SizeC']
+    TW = tif.TiffWriter(output_path, bigtiff=True)
 
-                page = 0
-                for t in range(0, ntime):
-                    for z in range(0, nplanes):
-                        for c in range(0, nchannels):
-                            img = TF.asarray(key=page)
-                            original_dtype = img.dtype
+    for cyc in dataset_structure:
+        print('image {0}/{1}'.format(cyc + 1, ncycles))
+        img_path = dataset_structure[cyc]['img_path']
+        TF = tif.TiffFile(img_path)
+        transform_matrix = transform_matrices[cyc]
 
-                            if img.shape != target_shape:
-                                img = pad_to_size(target_shape, img)
-                            if not np.array_equal(transform_matrix, identity_matrix):
-                                homogenous_transform_matrix = np.append(transform_matrix, [[0, 0, 1]], axis=0)
-                                try:
-                                    inv_matrix = np.linalg.inv(homogenous_transform_matrix)
-                                except np.linalg.LinAlgError as err:
-                                    print('Transformation matrix is singular. Using partial inverse')
-                                    inv_matrix = np.linalg.pinv(homogenous_transform_matrix)
+        img_structure = dataset_structure[cyc]['img_structure']
+        for channel in img_structure:
+            for zplane in img_structure[channel]:
+                page = img_structure[channel][zplane]
+                img = TF.asarray(key=page)
+                original_dtype = img.dtype
 
-                                AT = AffineTransform(inv_matrix)
-                                img = warp(img, AT, output_shape=img.shape, preserve_range=True).astype(original_dtype)
-                                #img = cv.warpAffine(img, transform_matrix, (img.shape[1], img.shape[0]), None)
+                img, _ = pad_to_size(target_shape, img)
+                if not np.array_equal(transform_matrix, identity_matrix):
+                    homogenous_transform_matrix = np.append(transform_matrix, [[0, 0, 1]], axis=0)
+                    inv_matrix = np.linalg.pinv(homogenous_transform_matrix)  # Using partial inverse to handle singular matrices
+                    AT = AffineTransform(inv_matrix)
+                    img = warp(img, AT, output_shape=img.shape, preserve_range=True).astype(original_dtype)
 
-                            TW.save(img, photometric='minisblack', description=new_meta)
-                            page += 1
+                TW.save(img, photometric='minisblack', description=new_meta)
+                page += 1
 
-                        if nplanes < max_planes:
-                            diff = max_planes - nplanes
-                            empty_page = np.zeros_like(img)
-                            for a in range(0, diff):
-                                TW.save(empty_page, photometric='minisblack', description=new_meta)
+                if nzplanes[cyc] < max_zplanes:
+                    diff = max_zplanes - nzplanes[cyc]
+                    empty_page = np.zeros_like(img)
+                    for a in range(0, diff):
+                        TW.save(empty_page, photometric='minisblack', description=new_meta)
+        TF.close()
+    TW.close()
+
+
+def check_input_size(img_paths: List[str], is_stack: bool):
+    if len(img_paths) == 1:
+        if is_stack:
+            pass
+        else:
+            raise ValueError('You need to provide at least two images to do a registration.')
+    elif len(img_paths) > 1:
+        if is_stack:
+            raise ValueError('Too many input images. ' +
+                             'When flag --stack enabled only one image can be used')
+        else:
+            pass
+    else:
+        raise ValueError('You need to provide at least two images to do a registration.')
 
 
 def main(img_paths: list, ref_img_id: int, ref_channel: str,
-         out_dir: str, n_workers: int, estimate_only: bool, load_param: str):
+         out_dir: str, n_workers: int, stack: bool, estimate_only: bool, load_param: str):
 
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
@@ -215,9 +219,15 @@ def main(img_paths: list, ref_img_id: int, ref_channel: str,
     else:
         dask.config.set({'num_workers': n_workers, 'scheduler': 'processes'})
 
+    is_stack = stack
+    ref_channel = ref_channel.lower()
+    check_input_size(img_paths, is_stack)
+
+    dataset_structure = get_dataset_structure(img_paths, ref_channel, is_stack)
 
     if load_param == 'none':
-        transform_matrices, target_shape, padding = estimate_registration_parameters(img_paths, ref_img_id, ref_channel)
+        transform_matrices, target_shape, padding = estimate_registration_parameters(dataset_structure, ref_img_id)
+
     else:
         reg_param = pd.read_csv(load_param)
         target_shape = (reg_param.loc[0, 'height'], reg_param.loc[0, 'width'])
@@ -231,10 +241,11 @@ def main(img_paths: list, ref_img_id: int, ref_channel: str,
             padding.append(pad)
 
     if not estimate_only:
-        transform_by_plane(img_paths, out_dir, target_shape, transform_matrices)
+        transform_imgs(dataset_structure, out_dir, target_shape, transform_matrices, is_stack)
 
     transform_matrices_flat = [M.flatten() for M in transform_matrices]
-    save_param(img_paths, out_dir, transform_matrices_flat, padding, target_shape)
+    img_paths2 = [dataset_structure[cyc]['img_path'] for cyc in dataset_structure]
+    save_param(img_paths2, out_dir, transform_matrices_flat, padding, target_shape)
 
     fin = datetime.now()
     print('\nelapsed time', fin - st)
@@ -253,10 +264,12 @@ if __name__ == '__main__':
                         help='directory to output registered image.')
     parser.add_argument('-n', type=int, default=1,
                         help='multiprocessing: number of processes, default 1')
+    parser.add_argument('--stack', action='store_true',
+                        help='add this flag if input is image stack instead of image list')
     parser.add_argument('--estimate_only', action='store_true',
                         help='add this flag if you want to get only registration parameters and do not want to process images.')
     parser.add_argument('--load_param', type=str, default='none',
                         help='specify path to csv file with registration parameters')
 
     args = parser.parse_args()
-    main(args.i, args.r, args.c, args.o, args.n, args.estimate_only, args.load_param)
+    main(args.i, args.r, args.c, args.o, args.n, args.stack, args.estimate_only, args.load_param)
