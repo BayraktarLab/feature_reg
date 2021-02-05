@@ -18,6 +18,8 @@ The script does tile based registration of images to avoid big memory consumptio
 
 **`-n`**    multiprocessing: number of processes, default 1
 
+**`--stack`**  add this flag if input is image stack instead of image list
+
 **`--estimate_only`**   add this flag if you want to get only registration parameters and do not want to process images.
 
 **`--load_param`**  specify path to csv file with registration parameters
