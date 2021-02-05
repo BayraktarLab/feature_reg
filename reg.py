@@ -192,15 +192,15 @@ def check_input_size(img_paths: List[str], is_stack: bool):
         if is_stack:
             pass
         else:
-            raise ValueError('You need to provide at least two image to do registration.')
+            raise ValueError('You need to provide at least two images to do a registration.')
     elif len(img_paths) > 1:
         if is_stack:
             raise ValueError('Too many input images. ' +
-                             'When flag --stack enabled only one image must be provided')
+                             'When flag --stack enabled only one image can be used')
         else:
             pass
     else:
-        raise ValueError('You need to provide at least two image to do registration.')
+        raise ValueError('You need to provide at least two images to do a registration.')
 
 
 def main(img_paths: list, ref_img_id: int, ref_channel: str,
