@@ -4,28 +4,34 @@ import cv2 as cv
 Image = np.ndarray
 
 
-def _pickle_keypoints(point):
-    return cv.KeyPoint, (*point.pt, point.size, point.angle,
-                          point.response, point.octave, point.class_id)
+def diff_of_gaus(img: Image, low_sigma: int = 5, high_sigma: int = 9):
+    if img.max() == 0:
+        return img
+    else:
+        fimg = cv.normalize(img, None, 0, 1, cv.NORM_MINMAX, cv.CV_32F)
+        low_sigma = cv.GaussianBlur(fimg, (0, 0), sigmaX=low_sigma, dst=None, sigmaY=low_sigma)
+        high_sigma = cv.GaussianBlur(fimg, (0, 0), sigmaX=high_sigma, dst=None, sigmaY=high_sigma)
+        diff = low_sigma - high_sigma
+        del low_sigma, high_sigma
+        return cv.normalize(diff, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
 
 
 def find_features(img):
-    processed_img = img
-    if processed_img.dtype != np.uint8:
-        processed_img = cv.normalize(processed_img, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
+    processed_img = diff_of_gaus(img)
 
     if processed_img.max() == 0:
         return [], []
-
-    detector = cv.FastFeatureDetector_create(1, True)
-    descriptor = cv.xfeatures2d.DAISY_create()
+    # default values except for threshold - discard points that have 0 response
+    detector = cv.FastFeatureDetector_create(threshold=1, nonmaxSuppression=True,
+                                             type=cv.FAST_FEATURE_DETECTOR_TYPE_9_16)
+    # default values
+    descriptor = cv.xfeatures2d.DAISY_create(radius=15, q_radius=3, q_theta=8, q_hist=8,
+                                             norm=cv.xfeatures2d.DAISY_NRM_NONE,
+                                             interpolation=True, use_orientation=False)
     kp = detector.detect(processed_img)
 
-    # get 1000 best points based on feature detector response
-    if len(kp) <= 3000:
-        pass
-    else:
-        kp = sorted(kp, key=lambda x: x.response, reverse=True)[:3000]
+    nfeatures_limit = 5000
+    kp = sorted(kp, key=lambda x: x.response, reverse=True)[:nfeatures_limit]
 
     kp, des = descriptor.compute(processed_img, kp)
 
