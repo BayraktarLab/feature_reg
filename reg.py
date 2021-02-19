@@ -83,7 +83,7 @@ def read_and_max_project_pages(img_path: str, tiff_pages: List[int]):
     return cv.normalize(max_proj, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
 
 
-def estimate_registration_parameters(dataset_structure, ref_cycle_id):
+def estimate_registration_parameters(dataset_structure, ref_cycle_id, tile_size):
     padding = []
     transform_matrices = []
     img_shapes = []
@@ -107,7 +107,7 @@ def estimate_registration_parameters(dataset_structure, ref_cycle_id):
     ref_img = read_and_max_project_pages(ref_img_path, ref_img_tiff_pages)
     ref_img, pad = pad_to_size(target_shape, ref_img)
     padding.append(pad)
-    ref_features = get_features(ref_img)
+    ref_features = get_features(ref_img, tile_size)
     gc.collect()
 
     ncycles = len(dataset_structure.keys())
@@ -127,7 +127,7 @@ def estimate_registration_parameters(dataset_structure, ref_cycle_id):
             mov_img, pad = pad_to_size(target_shape, mov_img)
             padding.append(pad)
 
-            transform_matrix = register_img_pair(ref_features, get_features(mov_img))
+            transform_matrix = register_img_pair(ref_features, get_features(mov_img, tile_size))
             transform_matrices.append(transform_matrix)
 
             gc.collect()
@@ -204,7 +204,7 @@ def check_input_size(img_paths: List[str], is_stack: bool):
 
 
 def main(img_paths: list, ref_img_id: int, ref_channel: str,
-         out_dir: str, n_workers: int, stack: bool, estimate_only: bool, load_param: str):
+         out_dir: str, n_workers: int, tile_size: int, stack: bool, estimate_only: bool, load_param: str):
 
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
@@ -226,7 +226,7 @@ def main(img_paths: list, ref_img_id: int, ref_channel: str,
     dataset_structure = get_dataset_structure(img_paths, ref_channel, is_stack)
 
     if load_param == 'none':
-        transform_matrices, target_shape, padding = estimate_registration_parameters(dataset_structure, ref_img_id)
+        transform_matrices, target_shape, padding = estimate_registration_parameters(dataset_structure, ref_img_id, tile_size)
 
     else:
         reg_param = pd.read_csv(load_param)
@@ -264,6 +264,8 @@ if __name__ == '__main__':
                         help='directory to output registered image.')
     parser.add_argument('-n', type=int, default=1,
                         help='multiprocessing: number of processes, default 1')
+    parser.add_argument('--tile_size', type=int, default=1000, help='size of a side of a square tile, ' +
+                                                                    'e.g. --tile_size 1000 = tile with dims 1000x1000px')
     parser.add_argument('--stack', action='store_true',
                         help='add this flag if input is image stack instead of image list')
     parser.add_argument('--estimate_only', action='store_true',
@@ -272,4 +274,4 @@ if __name__ == '__main__':
                         help='specify path to csv file with registration parameters')
 
     args = parser.parse_args()
-    main(args.i, args.r, args.c, args.o, args.n, args.stack, args.estimate_only, args.load_param)
+    main(args.i, args.r, args.c, args.o, args.n, args.tile_size, args.stack, args.estimate_only, args.load_param)

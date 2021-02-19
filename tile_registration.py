@@ -1,16 +1,14 @@
 import numpy as np
 import cv2 as cv
 
-
-from slicer import split_image_into_number_of_tiles
+from slicer import split_image_into_tiles_of_size
 from feature_detection import find_features_parallelized, match_features
 
 
-def split_image_into_tiles(img):
-    ntiles = 4
-    x_ntiles = ntiles
-    y_ntiles = ntiles
-    img_tiles = split_image_into_number_of_tiles(img, x_ntiles, y_ntiles, overlap=0)
+def split_image_into_tiles(img, tile_size: int):
+    x_size = tile_size
+    y_size = tile_size
+    img_tiles = split_image_into_tiles_of_size(img, x_size, y_size, overlap=51)
     return img_tiles
 
 
@@ -33,8 +31,8 @@ def combine_features(features, x_ntiles, y_ntiles, tile_size_x, tile_size_y):
     return keypoints_combined, descriptors_combined
 
 
-def get_features(img):
-    img_tiles, img_tile_info = split_image_into_tiles(img)
+def get_features(img, tile_size):
+    img_tiles, img_tile_info = split_image_into_tiles(img, tile_size)
 
     x_ntiles = img_tile_info['ntiles']['x']
     y_ntiles = img_tile_info['ntiles']['y']
