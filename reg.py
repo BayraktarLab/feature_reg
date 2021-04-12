@@ -105,7 +105,9 @@ def estimate_registration_parameters(dataset_structure, ref_cycle_id, tile_size)
 
     ref_img_tiff_pages = list(ref_img_structure[ref_img_ref_channel_id].values())
     ref_img = read_and_max_project_pages(ref_img_path, ref_img_tiff_pages)
+    gc.collect()
     ref_img, pad = pad_to_size(target_shape, ref_img)
+    gc.collect()
     padding.append(pad)
     ref_features = get_features(ref_img, tile_size)
     gc.collect()
@@ -123,13 +125,12 @@ def estimate_registration_parameters(dataset_structure, ref_cycle_id, tile_size)
         else:
             mov_img_tiff_pages = list(img_structure[ref_channel_id].values())
             mov_img = read_and_max_project_pages(img_path, mov_img_tiff_pages)
-
+            gc.collect()
             mov_img, pad = pad_to_size(target_shape, mov_img)
             padding.append(pad)
 
             transform_matrix = register_img_pair(ref_features, get_features(mov_img, tile_size))
             transform_matrices.append(transform_matrix)
-
             gc.collect()
 
     return transform_matrices, target_shape, padding
@@ -169,20 +170,27 @@ def transform_imgs(dataset_structure, out_dir, target_shape, transform_matrices,
                 original_dtype = img.dtype
 
                 img, _ = pad_to_size(target_shape, img)
+                gc.collect()
                 if not np.array_equal(transform_matrix, identity_matrix):
                     homogenous_transform_matrix = np.append(transform_matrix, [[0, 0, 1]], axis=0)
                     inv_matrix = np.linalg.pinv(homogenous_transform_matrix)  # Using partial inverse to handle singular matrices
                     AT = AffineTransform(inv_matrix)
                     img = warp(img, AT, output_shape=img.shape, preserve_range=True).astype(original_dtype)
-
-                TW.save(img, photometric='minisblack', description=new_meta)
+                    gc.collect()
+                TW.write(img, photometric='minisblack', description=new_meta)
                 page += 1
+                gc.collect()
 
                 if nzplanes[cyc] < max_zplanes:
                     diff = max_zplanes - nzplanes[cyc]
                     empty_page = np.zeros_like(img)
                     for a in range(0, diff):
-                        TW.save(empty_page, photometric='minisblack', description=new_meta)
+                        TW.write(empty_page, photometric='minisblack', description=new_meta)
+                    del empty_page
+                    gc.collect()
+                del img
+                gc.collect()
+
         TF.close()
     TW.close()
 

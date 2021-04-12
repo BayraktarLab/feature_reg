@@ -1,3 +1,4 @@
+import gc
 import numpy as np
 import cv2 as cv
 
@@ -42,6 +43,7 @@ def get_features(img, tile_size):
     del img_tiles
     combined_features = combine_features(tiles_features, x_ntiles, y_ntiles, tile_size_x, tile_size_y)
     del tiles_features
+    gc.collect()
     return combined_features
 
 
