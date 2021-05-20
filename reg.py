@@ -177,7 +177,7 @@ def transform_imgs(dataset_structure, out_dir, target_shape, transform_matrices,
                     AT = AffineTransform(inv_matrix)
                     img = warp(img, AT, output_shape=img.shape, preserve_range=True).astype(original_dtype)
                     gc.collect()
-                TW.write(img, photometric='minisblack', description=new_meta)
+                TW.write(img, contiguous=True, photometric='minisblack', description=new_meta)
                 page += 1
                 gc.collect()
 
@@ -185,7 +185,7 @@ def transform_imgs(dataset_structure, out_dir, target_shape, transform_matrices,
                     diff = max_zplanes - nzplanes[cyc]
                     empty_page = np.zeros_like(img)
                     for a in range(0, diff):
-                        TW.write(empty_page, photometric='minisblack', description=new_meta)
+                        TW.write(empty_page, contiguous=True, photometric='minisblack', description=new_meta)
                     del empty_page
                     gc.collect()
                 del img
