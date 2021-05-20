@@ -113,7 +113,7 @@ def estimate_registration_parameters(dataset_structure, ref_cycle_id, tile_size)
     gc.collect()
 
     ncycles = len(dataset_structure.keys())
-
+    print('Registering images')
     for cycle in dataset_structure:
         print('image {0}/{1}'.format(cycle + 1, ncycles))
         img_structure = dataset_structure[cycle]['img_structure']
@@ -137,7 +137,7 @@ def estimate_registration_parameters(dataset_structure, ref_cycle_id, tile_size)
 
 
 def transform_imgs(dataset_structure, out_dir, target_shape, transform_matrices, is_stack):
-    print('transforming images')
+    print('Transforming images')
     identity_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
     output_path = osp.join(out_dir, 'out.tif')
 
