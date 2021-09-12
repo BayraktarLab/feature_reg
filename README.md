@@ -1,3 +1,4 @@
+[![DOI](https://zenodo.org/badge/405296414.svg)](https://zenodo.org/badge/latestdoi/405296414)
 # Feature based image registrator
 
 The image registrator uses `FAST` feature finder and `DAISY` feature descriptor for registration. 
