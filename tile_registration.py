@@ -24,8 +24,8 @@ def combine_features(features, x_ntiles, y_ntiles, tile_size_x, tile_size_y):
                 tile_coord_x = tile_id % x_ntiles * tile_size_x
                 tile_coord_y = tile_id // x_ntiles * tile_size_y
                 new_coords = (tile_coord_x + kp[0][0], tile_coord_y + kp[0][1])
-                new_kp = cv.KeyPoint(x=new_coords[0], y=new_coords[1], _size=kp[1],
-                                     _angle=kp[2], _response=kp[3], _octave=kp[4], _class_id=kp[5])
+                new_kp = cv.KeyPoint(x=new_coords[0], y=new_coords[1], size=kp[1],
+                                     angle=kp[2], response=kp[3], octave=kp[4], class_id=kp[5])
                 keypoints_combined.append(new_kp)
 
     descriptors_combined = np.concatenate(descriptors_list, axis=0)
