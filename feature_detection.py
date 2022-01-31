@@ -75,8 +75,8 @@ def match_features(img1_kp_des, img2_kp_des):
     if len(good) < 3:
         return None
     # convert keypoints to format acceptable for estimator
-    src_pts = np.float32([kp1[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
-    dst_pts = np.float32([kp2[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+    src_pts = np.array([kp1[m.trainIdx].pt for m in good], dtype=np.float32).reshape((-1, 1, 2))
+    dst_pts = np.array([kp2[m.queryIdx].pt for m in good], dtype=np.float32).reshape((-1, 1, 2))
 
     # find out how images shifted (compute affine transformation)
     affine_transform_matrix, mask = cv.estimateAffinePartial2D(dst_pts, src_pts, method=cv.RANSAC, confidence=0.99)
