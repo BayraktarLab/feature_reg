@@ -29,7 +29,7 @@ def view_tile_without_overlap(img, overlap):
     return img[overlap:-overlap, overlap:-overlap]
 
 
-def find_features(img):
+def find_features(img, nfeatures_limit=5000):
     processed_img = diff_of_gaus(img)
 
     if processed_img.max() == 0:
@@ -44,7 +44,6 @@ def find_features(img):
     overlap = 51
     kp = detector.detect(view_tile_without_overlap(processed_img, overlap))
 
-    nfeatures_limit = 5000
     kp = sorted(kp, key=lambda x: x.response, reverse=True)[:nfeatures_limit]
 
     kp, des = descriptor.compute(processed_img, kp)
@@ -85,8 +84,10 @@ def match_features(img1_kp_des, img2_kp_des):
 
 
 def find_features_parallelized(tile_list):
+    n_tiles = len(tile_list)
+    nfeatures_limit_per_tile = min(1000000 // n_tiles, 5000)
     task = []
     for tile in tile_list:
-        task.append(dask.delayed(find_features)(tile))
+        task.append(dask.delayed(find_features)(tile, nfeatures_limit_per_tile))
     tiles_features = dask.compute(*task)
     return tiles_features
