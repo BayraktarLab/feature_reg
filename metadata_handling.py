@@ -1,39 +1,40 @@
+import re
 import xml.etree.ElementTree as ET
 from io import StringIO
-import re
 from typing import List
 
 from tifffile import TiffFile
+
 XML = ET.ElementTree
 
 
 def str_to_xml(xmlstr: str):
-    """ Converts str to xml and strips namespaces """
+    """Converts str to xml and strips namespaces"""
     it = ET.iterparse(StringIO(xmlstr))
     for _, el in it:
-        _, _, el.tag = el.tag.rpartition('}')
+        _, _, el.tag = el.tag.rpartition("}")
     root = it.root
     return root
 
 
 def extract_channel_info(ome_xml: XML):
-    channels = ome_xml.find('Image').find('Pixels').findall('Channel')
-    channel_names = [ch.get('Name') for ch in channels]
-    channel_ids = [ch.get('ID') for ch in channels]
+    channels = ome_xml.find("Image").find("Pixels").findall("Channel")
+    channel_names = [ch.get("Name") for ch in channels]
+    channel_ids = [ch.get("ID") for ch in channels]
     channel_fluors = []
     for ch in channels:
-        if 'Fluor' in ch.attrib:
-            channel_fluors.append(ch.get('Fluor'))
-    image_attribs = ome_xml.find('Image').find('Pixels').attrib
-    nchannels = int(image_attribs.get('SizeC', 1))
-    nzplanes = int(image_attribs.get('SizeZ', 1))
+        if "Fluor" in ch.attrib:
+            channel_fluors.append(ch.get("Fluor"))
+    image_attribs = ome_xml.find("Image").find("Pixels").attrib
+    nchannels = int(image_attribs.get("SizeC", 1))
+    nzplanes = int(image_attribs.get("SizeZ", 1))
     return channels, channel_names, channel_ids, channel_fluors, nchannels, nzplanes
 
 
 def extract_pixels_info(ome_xml: XML):
-    dims = ['SizeX', 'SizeY', 'SizeC', 'SizeZ', 'SizeT']
-    sizes = ['PhysicalSizeX', 'PhysicalSizeY']
-    pixels = ome_xml.find('Image').find('Pixels')
+    dims = ["SizeX", "SizeY", "SizeC", "SizeZ", "SizeT"]
+    sizes = ["PhysicalSizeX", "PhysicalSizeY"]
+    pixels = ome_xml.find("Image").find("Pixels")
     pixels_info = dict()
     for d in dims:
         pixels_info[d] = int(pixels.get(d, 1))
@@ -42,33 +43,47 @@ def extract_pixels_info(ome_xml: XML):
     return pixels_info
 
 
-def find_where_ref_channel(ome_xml: XML, ref_channel: str):
-    """ Find if reference channel is in fluorophores or channel names and return them"""
-    channels, channel_names, channel_ids, channel_fluors, _, _ = extract_channel_info(ome_xml)
+def strip_cycle_info(name):
+    ch_name = re.sub(r"^(c|cyc|cycle)\d+(\s+|_)", "", name)  # strip start
+    ch_name2 = re.sub(r"(-\d+)?(_\d+)?$", "", ch_name)  # strip end
+    return ch_name2
 
+
+def find_where_ref_channel(ome_xml: XML, ref_channel: str):
+    """Find if reference channel is in fluorophores or channel names and return them"""
+    channels, channel_names, channel_ids, channel_fluors, _, _ = extract_channel_info(
+        ome_xml
+    )
+
+    ref_ch = strip_cycle_info(ref_channel)
     channel_fluors = [fluor.lower() for fluor in channel_fluors]
     channel_names = [name.lower() for name in channel_names]
 
     # strip cycle id from channel name and fluor name
     if channel_fluors != []:
-        fluors = [re.sub(r'^(c|cyc|cycle)\d+(\s+|_)', '', fluor) for fluor in channel_fluors]  # remove cycle name
+        fluors = [strip_cycle_info(fluor) for fluor in channel_fluors]
     else:
         fluors = None
-    names = [re.sub(r'^(c|cyc|cycle)\d+(\s+|_)', '', name) for name in channel_names]
+    names = [strip_cycle_info(name) for name in channel_names]
 
     # check if reference channel is present somewhere
-    if ref_channel in names:
+    if ref_ch in names:
         matches = names
-    elif fluors is not None and ref_channel in fluors:
+    elif fluors is not None and ref_ch in fluors:
         matches = fluors
     else:
         if fluors is not None:
-            message = 'Incorrect reference channel. Available channel names: {names}, fluors: {fluors}'
-            raise ValueError(message.format(names=', '.join(set(names)), fluors=', '.join(set(fluors))))
+            msg = (
+                f"Incorrect reference channel {str(ref_ch)}. "
+                + f"Available channel names: {str(set(names))}, fluors: {str(set(fluors))}"
+            )
+            raise ValueError(msg)
         else:
-            message = 'Incorrect reference channel. Available channel names: {names}'
-            raise ValueError(message.format(names=', '.join(set(names))))
-
+            msg = (
+                f"Incorrect reference channel {str(ref_ch)}. "
+                + f"Available channel names: {str(set(names))}"
+            )
+            raise ValueError(msg)
     return matches
 
 
@@ -79,7 +94,9 @@ def get_info_from_ome_meta(img_path: str, ref_channel: str, is_stack: bool):
     matches = find_where_ref_channel(ome_xml, ref_channel)
     channels, _, _, _, nchannels, nzplanes = extract_channel_info(ome_xml)
 
-    ref_channel_ids = [_id for _id, ch in enumerate(matches) if ch == ref_channel]
+    ref_channel_ids = [
+        _id for _id, ch in enumerate(matches) if ch == strip_cycle_info(ref_channel)
+    ]
     total_channels = len(channels)
     if is_stack:
         nchannels_per_cycle = ref_channel_ids[1] - ref_channel_ids[0]
@@ -95,7 +112,9 @@ def get_img_list_structure(img_paths: List[str], ref_channel: str):
     img_list_structure = dict()
 
     for cyc, path in enumerate(img_paths):
-        _, nchannels, nzplanes, ref_channel_id = get_info_from_ome_meta(path, ref_channel, is_stack=False)
+        _, nchannels, nzplanes, ref_channel_id = get_info_from_ome_meta(
+            path, ref_channel, is_stack=False
+        )
 
         img_structure = dict()
         img_list_structure[cyc] = dict()
@@ -107,15 +126,16 @@ def get_img_list_structure(img_paths: List[str], ref_channel: str):
                 img_structure[ch][z] = tiff_page
                 tiff_page += 1
 
-        img_list_structure[cyc]['img_structure'] = img_structure
-        img_list_structure[cyc]['ref_channel_id'] = ref_channel_id
-        img_list_structure[cyc]['img_path'] = path
-
+        img_list_structure[cyc]["img_structure"] = img_structure
+        img_list_structure[cyc]["ref_channel_id"] = ref_channel_id
+        img_list_structure[cyc]["img_path"] = path
     return img_list_structure
 
 
 def get_stack_structure(img_path: str, ref_channel: str):
-    ncycles, nchannels, nzplanes, ref_channel_id = get_info_from_ome_meta(img_path, ref_channel, is_stack=True)
+    ncycles, nchannels, nzplanes, ref_channel_id = get_info_from_ome_meta(
+        img_path, ref_channel, is_stack=True
+    )
 
     stack_structure = dict()
     tiff_page = 0
@@ -127,10 +147,9 @@ def get_stack_structure(img_path: str, ref_channel: str):
             for z in range(0, nzplanes):
                 img_structure[ch][z] = tiff_page
                 tiff_page += 1
-        stack_structure[cyc]['img_structure'] = img_structure
-        stack_structure[cyc]['ref_channel_id'] = ref_channel_id
-        stack_structure[cyc]['img_path'] = img_path
-
+        stack_structure[cyc]["img_structure"] = img_structure
+        stack_structure[cyc]["ref_channel_id"] = ref_channel_id
+        stack_structure[cyc]["img_path"] = img_path
     return stack_structure
 
 
@@ -159,11 +178,11 @@ def generate_new_metadata(img_paths, target_shape):
 
     for meta in metadata_list:
         pixels_info = extract_pixels_info(str_to_xml(meta))
-        time.append(pixels_info['SizeT'])
-        planes.append(pixels_info['SizeZ'])
-        channels.append(pixels_info['SizeC'])
-        phys_size_x_list.append(pixels_info['PhysicalSizeX'])
-        phys_size_y_list.append(pixels_info['PhysicalSizeY'])
+        time.append(pixels_info["SizeT"])
+        planes.append(pixels_info["SizeZ"])
+        channels.append(pixels_info["SizeC"])
+        phys_size_x_list.append(pixels_info["PhysicalSizeX"])
+        phys_size_y_list.append(pixels_info["PhysicalSizeY"])
 
     max_time = max(time)
     max_planes = max(planes)
@@ -171,23 +190,25 @@ def generate_new_metadata(img_paths, target_shape):
     max_phys_size_x = max(phys_size_x_list)
     max_phys_size_y = max(phys_size_y_list)
 
-    sizes = {'SizeX': str(target_shape[1]),
-             'SizeY': str(target_shape[0]),
-             'SizeC': str(total_channels),
-             'SizeZ': str(max_planes),
-             'SizeT': str(max_time),
-             'PhysicalSizeX': str(max_phys_size_x),
-             'PhysicalSizeY': str(max_phys_size_y)
-             }
+    sizes = {
+        "SizeX": str(target_shape[1]),
+        "SizeY": str(target_shape[0]),
+        "SizeC": str(total_channels),
+        "SizeZ": str(max_planes),
+        "SizeT": str(max_time),
+        "PhysicalSizeX": str(max_phys_size_x),
+        "PhysicalSizeY": str(max_phys_size_y),
+    }
 
     # use metadata from first image as reference metadata
     ref_xml = str_to_xml(metadata_list[0])
 
     # set proper ome attributes tags
-    proper_ome_attribs = {'xmlns': 'http://www.openmicroscopy.org/Schemas/OME/2016-06',
-                          'xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
-                          'xsi:schemaLocation': 'http://www.openmicroscopy.org/Schemas/OME/2016-06 http://www.openmicroscopy.org/Schemas/OME/2016-06/ome.xsd'
-                          }
+    proper_ome_attribs = {
+        "xmlns": "http://www.openmicroscopy.org/Schemas/OME/2016-06",
+        "xmlns:xsi": "http://www.w3.org/2001/XMLSchema-instance",
+        "xsi:schemaLocation": "http://www.openmicroscopy.org/Schemas/OME/2016-06 http://www.openmicroscopy.org/Schemas/OME/2016-06/ome.xsd",
+    }
     ref_xml.attrib.clear()
 
     for attr, val in proper_ome_attribs.items():
@@ -195,34 +216,42 @@ def generate_new_metadata(img_paths, target_shape):
 
     # set new dimension sizes
     for attr, size in sizes.items():
-        ref_xml.find('Image').find('Pixels').set(attr, size)
-
+        ref_xml.find("Image").find("Pixels").set(attr, size)
 
     # remove old channels and tiffdata
-    old_channels = ref_xml.find('Image').find('Pixels').findall('Channel')
+    old_channels = ref_xml.find("Image").find("Pixels").findall("Channel")
     for ch in old_channels:
-        ref_xml.find('Image').find('Pixels').remove(ch)
+        ref_xml.find("Image").find("Pixels").remove(ch)
 
-    tiffdata = ref_xml.find('Image').find('Pixels').findall('TiffData')
+    tiffdata = ref_xml.find("Image").find("Pixels").findall("TiffData")
     if tiffdata is not None or tiffdata != []:
         for td in tiffdata:
-            ref_xml.find('Image').find('Pixels').remove(td)
+            ref_xml.find("Image").find("Pixels").remove(td)
 
     # add new channels
-    write_format = '0' + str(len(str(ncycles)) + 1) + 'd'  # e.g. for number 5 format = 02d, result = 05
+    write_format = (
+        "0" + str(len(str(ncycles)) + 1) + "d"
+    )  # e.g. for number 5 format = 02d, result = 05
     channel_id = 0
     for i in range(0, ncycles):
-        channels, channel_names, channel_ids, channel_fluors, num_channels_per_cycle, num_zplanes_per_channel = extract_channel_info(str_to_xml(metadata_list[i]))
+        (
+            channels,
+            channel_names,
+            channel_ids,
+            channel_fluors,
+            num_channels_per_cycle,
+            num_zplanes_per_channel,
+        ) = extract_channel_info(str_to_xml(metadata_list[i]))
 
-        cycle_name = 'c' + format(i+1, write_format) + ' '
+        cycle_name = "c" + format(i + 1, write_format) + " "
         new_channel_names = [cycle_name + ch for ch in channel_names]
 
         for ch in range(0, len(channels)):
-            new_channel_id = 'Channel:0:' + str(channel_id)
+            new_channel_id = "Channel:0:" + str(channel_id)
             new_channel_name = new_channel_names[ch]
-            channels[ch].set('Name', new_channel_name)
-            channels[ch].set('ID', new_channel_id)
-            ref_xml.find('Image').find('Pixels').append(channels[ch])
+            channels[ch].set("Name", new_channel_name)
+            channels[ch].set("ID", new_channel_id)
+            ref_xml.find("Image").find("Pixels").append(channels[ch])
             channel_id += 1
 
     # add new tiffdata
@@ -230,10 +259,22 @@ def generate_new_metadata(img_paths, target_shape):
     for t in range(0, max_time):
         for c in range(0, total_channels):
             for z in range(0, max_planes):
-                ET.SubElement(ref_xml.find('Image').find('Pixels'), "TiffData", dict(FirstC=str(c), FirstT=str(t), FirstZ=str(z), IFD=str(ifd), PlaneCount=str(1)))
+                ET.SubElement(
+                    ref_xml.find("Image").find("Pixels"),
+                    "TiffData",
+                    dict(
+                        FirstC=str(c),
+                        FirstT=str(t),
+                        FirstZ=str(z),
+                        IFD=str(ifd),
+                        PlaneCount=str(1),
+                    ),
+                )
                 ifd += 1
 
     xml_declaration = '<?xml version="1.0" encoding="UTF-8"?>'
-    result_ome_meta = xml_declaration + ET.tostring(ref_xml, method='xml', encoding='utf-8').decode('ascii', errors='ignore')
+    result_ome_meta = xml_declaration + ET.tostring(
+        ref_xml, method="xml", encoding="utf-8"
+    ).decode("ascii", errors="ignore")
 
     return result_ome_meta

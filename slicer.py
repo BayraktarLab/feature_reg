@@ -9,10 +9,10 @@ def get_tile(arr: Image, hor_f: int, hor_t: int, ver_f: int, ver_t: int, overlap
     ver_f -= overlap
     ver_t += overlap
 
-    left_check  = hor_f
-    top_check   = ver_f
+    left_check = hor_f
+    top_check = ver_f
     right_check = hor_t - arr.shape[1]
-    bot_check   = ver_t - arr.shape[0]
+    bot_check = ver_t - arr.shape[0]
 
     left_pad_size = 0
     top_pad_size = 0
@@ -36,21 +36,25 @@ def get_tile(arr: Image, hor_f: int, hor_t: int, ver_f: int, ver_t: int, overlap
     tile = arr[tile_slice]
     padding = ((top_pad_size, bot_pad_size), (left_pad_size, right_pad_size))
     if max(padding) > (0, 0):
-        tile = np.pad(tile, padding, mode='constant')
+        tile = np.pad(tile, padding, mode="constant")
     return tile
 
 
 def split_image_into_tiles_of_size(arr: Image, tile_w: int, tile_h: int, overlap: int):
-    """ Splits image into tiles by size of tile.
-        tile_w - tile width
-        tile_h - tile height
+    """Splits image into tiles by size of tile.
+    tile_w - tile width
+    tile_h - tile height
     """
     x_axis = -1
     y_axis = -2
     arr_width, arr_height = arr.shape[x_axis], arr.shape[y_axis]
 
-    x_ntiles = arr_width // tile_w if arr_width % tile_w == 0 else (arr_width // tile_w) + 1
-    y_ntiles = arr_height // tile_h if arr_height % tile_h == 0 else (arr_height // tile_h) + 1
+    x_ntiles = (
+        arr_width // tile_w if arr_width % tile_w == 0 else (arr_width // tile_w) + 1
+    )
+    y_ntiles = (
+        arr_height // tile_h if arr_height % tile_h == 0 else (arr_height // tile_h) + 1
+    )
 
     tiles = []
 
@@ -84,13 +88,14 @@ def split_image_into_tiles_of_size(arr: Image, tile_w: int, tile_h: int, overlap
     return tiles, info
 
 
-def split_image_into_number_of_tiles(arr: Image, x_ntiles: int, y_ntiles: int, overlap: int):
-    """ Splits image into tiles by number of tile.
-        x_ntiles - number of tiles horizontally
-        y_ntiles - number of tiles vertically
+def split_image_into_number_of_tiles(
+    arr: Image, x_ntiles: int, y_ntiles: int, overlap: int
+):
+    """Splits image into tiles by number of tile.
+    x_ntiles - number of tiles horizontally
+    y_ntiles - number of tiles vertically
     """
     img_width, img_height = arr.shape[-1], arr.shape[-2]
     tile_w = img_width // x_ntiles
     tile_h = img_height // y_ntiles
     return split_image_into_tiles_of_size(arr, tile_w, tile_h, overlap)
-
