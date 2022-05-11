@@ -24,7 +24,9 @@ def mi_tiled(arr1: Image, arr2: Image, tile_size: int) -> float:
         tasks = []
         for i in range(0, len(arr1_parts)):
             if arr1_parts[i].size != 0:
-                task = dask.delayed(normalized_mutual_info_score)(arr1_parts[i], arr2_parts[i])
+                task = dask.delayed(normalized_mutual_info_score)(
+                    arr1_parts[i], arr2_parts[i]
+                )
                 tasks.append(task)
         scores = dask.compute(*tasks)
         mi_score = np.mean(scores)
@@ -48,7 +50,9 @@ class PyrReg:
         self._ref_img_pyr, self._factors = self._generate_img_pyr(self.ref_img)
         self._ref_pyr_features = []
         for pyr_level in self._ref_img_pyr:
-            self._ref_pyr_features.append(find_features(self.dog(pyr_level), self.tile_size))
+            self._ref_pyr_features.append(
+                find_features(self.dog(pyr_level), self.tile_size)
+            )
 
     def register(self, mov_img) -> np.ndarray:
         if len(self.ref_img) == 0:
@@ -73,7 +77,9 @@ class PyrReg:
                 this_scale_t_mat = self._multiply_transform_matrices(
                     rescaled_t_mat_list
                 )
-                mov_img_prev_scale_transform = self.transform_img(mov_img_pyrs[i], this_scale_t_mat)
+                mov_img_prev_scale_transform = self.transform_img(
+                    mov_img_pyrs[i], this_scale_t_mat
+                )
                 mov_img_this_scale_transform, t_mat = self._iterative_alignment(
                     self._ref_img_pyr[i],
                     self._ref_pyr_features[i],
@@ -86,12 +92,12 @@ class PyrReg:
 
     def transform_big_img(self, img: Image, transform_matrix: np.ndarray) -> Image:
         orig_dtype = deepcopy(img.dtype)
-        homogenous_transform_matrix = np.append(
-            transform_matrix, [[0, 0, 1]], axis=0
-        )
+        homogenous_transform_matrix = np.append(transform_matrix, [[0, 0, 1]], axis=0)
         inv_matrix = np.linalg.pinv(homogenous_transform_matrix)
         AT = AffineTransform(inv_matrix)
-        img = warp(img, AT, output_shape=img.shape, preserve_range=True).astype(orig_dtype)
+        img = warp(img, AT, output_shape=img.shape, preserve_range=True).astype(
+            orig_dtype
+        )
         return img
 
     def transform_img(self, img: Image, transform_matrix: np.ndarray) -> Image:
@@ -132,7 +138,7 @@ class PyrReg:
             print("    Iteration", i + 1, "/", self.num_iterations)
             mov_img_aligned, est_t_mat_pyr = self._align_imgs(ref_features, aligned_img)
             check_results = self.check_if_passes(ref_img, mov_img_aligned, aligned_img)
-            if any(check_results) and not self._check_if_outside_borders(
+            if any(check_results) and self._check_if_valid_transform(
                 est_t_mat_pyr, mov_img.shape
             ):
                 print("    Found better alignment")
@@ -181,7 +187,46 @@ class PyrReg:
         t_mat_copy[1, 2] *= scale
         return t_mat_copy
 
-    def _check_if_outside_borders(
+    def _check_if_valid_transform(
+        self, t_mat: np.ndarray, img_shape: Tuple[int, int]
+    ) -> bool:
+        is_inside_border = self._check_if_inside_borders(t_mat, img_shape)
+        is_proper_scale = self._check_if_proper_scale(t_mat)
+        if all((is_inside_border, is_proper_scale)):
+            return True
+        else:
+            return False
+
+    def _check_if_proper_scale(self, t_mat: np.ndarray):
+        # https://frederic-wang.fr/decomposition-of-2d-transform-matrices.html
+        # |a c e|
+        # |b d f|
+        a = t_mat[0, 0]
+        b = t_mat[1, 0]
+        c = t_mat[0, 1]
+        d = t_mat[1, 1]
+
+        det = a * d - b * c
+        if a != 0 or b != 0:
+            r = np.sqrt(a**2 + b**2)
+            scale = (r, det / r)
+        elif c != 0 or d != 0:
+            s = np.sqrt(c**2 + d**2)
+            scale = (det / s, s)
+        else:
+            scale = (0, 0)
+        print(t_mat)
+        print(scale)
+        if scale == (0, 0):
+            return False
+        elif scale[0] > 3 or scale[1] > 3:
+            return False
+        elif scale[0] < 0.3 or scale[1] < 0.3:
+            return False
+        else:
+            return True
+
+    def _check_if_inside_borders(
         self, t_mat: np.ndarray, img_shape: Tuple[int, int]
     ) -> bool:
         cy = img_shape[0] // 2
@@ -191,14 +236,12 @@ class PyrReg:
         t_mat_hom = np.append(t_mat, [[0, 0, 1]], axis=0)
         transf_center = t_mat_hom @ center_coords
         if np.any((border_coords - np.abs(transf_center)) < 0):
-            return True
-        else:
             return False
+        else:
+            return True
 
     def mutual_information_test(self, ref_arr, test_arr, init_arr):
-        after_mi_score = mi_tiled(
-            self.dog(ref_arr), self.dog(test_arr), self.tile_size
-        )
+        after_mi_score = mi_tiled(self.dog(ref_arr), self.dog(test_arr), self.tile_size)
         before_mi_score = mi_tiled(
             self.dog(ref_arr), self.dog(init_arr), self.tile_size
         )
@@ -215,17 +258,11 @@ class PyrReg:
         if pyr_factor > 16:
             return 1, 2
         else:
-            sigmas = {
-                1: (5, 9),
-                2: (4, 7),
-                4: (3, 5),
-                8: (2, 3),
-                16: (1, 2)
-            }
+            sigmas = {1: (5, 9), 2: (4, 7), 4: (3, 5), 8: (2, 3), 16: (1, 2)}
         return sigmas[pyr_factor]
 
     def dog(self, img: Image, low_sigma: int = 5, high_sigma: int = 9) -> Image:
-        """ Difference of Gaussian """
+        """Difference of Gaussian"""
         if img.max() == 0:
             return img
         else:
@@ -241,4 +278,6 @@ class PyrReg:
             )
             diff_of_gaussians = hs - ls
             del hs, ls
-            return cv.normalize(diff_of_gaussians, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
+            return cv.normalize(
+                diff_of_gaussians, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U
+            )
