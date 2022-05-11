@@ -1,14 +1,34 @@
 import gc
 from typing import List, Tuple, Union
+from copy import deepcopy
 
 import cv2 as cv
 import numpy as np
 from sklearn.metrics import normalized_mutual_info_score
+from skimage.transform import AffineTransform, warp
+import dask
 
 from feature_detection import Features
 from tile_registration import find_features, register_img_pair
 
 Image = np.ndarray
+
+
+def mi_tiled(arr1: Image, arr2: Image, tile_size: int) -> float:
+    if max(arr1.shape) / tile_size < 2:
+        return normalized_mutual_info_score(arr1.flatten(), arr2.flatten())
+    else:
+        indices = list(range(tile_size * tile_size, arr1.size, tile_size * tile_size))
+        arr1_parts = np.array_split(arr1.flatten(), indices)
+        arr2_parts = np.array_split(arr2.flatten(), indices)
+        tasks = []
+        for i in range(0, len(arr1_parts)):
+            if arr1_parts[i].size != 0:
+                task = dask.delayed(normalized_mutual_info_score)(arr1_parts[i], arr2_parts[i])
+                tasks.append(task)
+        scores = dask.compute(*tasks)
+        mi_score = np.mean(scores)
+    return mi_score
 
 
 class PyrReg:
@@ -20,6 +40,7 @@ class PyrReg:
         self._ref_pyr_features = []
         self._ref_img_pyr = []
         self._factors = [16, 8, 4, 2]
+        self._this_pyr_factor = 1
 
     def calc_ref_img_features(self):
         if len(self.ref_img) == 0:
@@ -27,7 +48,7 @@ class PyrReg:
         self._ref_img_pyr, self._factors = self._generate_img_pyr(self.ref_img)
         self._ref_pyr_features = []
         for pyr_level in self._ref_img_pyr:
-            self._ref_pyr_features.append(find_features(pyr_level, self.tile_size))
+            self._ref_pyr_features.append(find_features(self.dog(pyr_level), self.tile_size))
 
     def register(self, mov_img) -> np.ndarray:
         if len(self.ref_img) == 0:
@@ -40,6 +61,7 @@ class PyrReg:
         fullscale_t_mat_list = []
         for i, factor in enumerate(self._factors):
             print("Pyramid scale", factor)
+            self._this_pyr_factor = factor
             if i == 0:
                 mov_img_this_scale_transform, t_mat = self._iterative_alignment(
                     self._ref_img_pyr[i], self._ref_pyr_features[i], mov_img_pyrs[i]
@@ -51,9 +73,7 @@ class PyrReg:
                 this_scale_t_mat = self._multiply_transform_matrices(
                     rescaled_t_mat_list
                 )
-                mov_img_prev_scale_transform = cv.warpAffine(
-                    mov_img_pyrs[i], this_scale_t_mat, dsize=mov_img_pyrs[i].shape[::-1]
-                )
+                mov_img_prev_scale_transform = self.transform_img(mov_img_pyrs[i], this_scale_t_mat)
                 mov_img_this_scale_transform, t_mat = self._iterative_alignment(
                     self._ref_img_pyr[i],
                     self._ref_pyr_features[i],
@@ -63,6 +83,22 @@ class PyrReg:
             gc.collect()
         final_transform = self._multiply_transform_matrices(fullscale_t_mat_list)
         return final_transform
+
+    def transform_big_img(self, img: Image, transform_matrix: np.ndarray) -> Image:
+        orig_dtype = deepcopy(img.dtype)
+        homogenous_transform_matrix = np.append(
+            transform_matrix, [[0, 0, 1]], axis=0
+        )
+        inv_matrix = np.linalg.pinv(homogenous_transform_matrix)
+        AT = AffineTransform(inv_matrix)
+        img = warp(img, AT, output_shape=img.shape, preserve_range=True).astype(orig_dtype)
+        return img
+
+    def transform_img(self, img: Image, transform_matrix: np.ndarray) -> Image:
+        if max(img.shape) > 32000:
+            return self.transform_big_img(img, transform_matrix)
+        else:
+            return cv.warpAffine(img, transform_matrix, dsize=img.shape[::-1])
 
     def _generate_img_pyr(self, arr: Image) -> Tuple[List[Image], List[int]]:
         if self.num_pyr_lvl < 0:
@@ -113,22 +149,20 @@ class PyrReg:
         self, ref: Union[Image, Features], mov_img: Image
     ) -> Tuple[Image, np.ndarray]:
         if not isinstance(ref, Features):
-            ref_features = find_features(ref, self.tile_size)
+            ref_features = find_features(self.dog(ref), self.tile_size)
         else:
             ref_features = ref
-        mov_features = find_features(mov_img, self.tile_size)
+        mov_features = find_features(self.dog(mov_img), self.tile_size)
         transform_mat = register_img_pair(ref_features, mov_features)
         if np.equal(transform_mat, np.eye(2, 3)).all():
             return mov_img, np.eye(2, 3)
         else:
-            img_aligned = cv.warpAffine(
-                mov_img, transform_mat, dsize=mov_img.shape[::-1]
-            )
+            img_aligned = self.transform_img(mov_img, transform_mat)
             return img_aligned, transform_mat
 
     def _realign_img(self, mov_img: Image, mat_list: List[np.ndarray]) -> Image:
         mul_mat = self._multiply_transform_matrices(mat_list)
-        img_aligned = cv.warpAffine(mov_img, mul_mat, dsize=mov_img.shape[::-1])
+        img_aligned = self.transform_img(mov_img, mul_mat)
         return img_aligned
 
     def _multiply_transform_matrices(self, mat_list: List[np.ndarray]) -> np.ndarray:
@@ -162,11 +196,11 @@ class PyrReg:
             return False
 
     def mutual_information_test(self, ref_arr, test_arr, init_arr):
-        after_mi_score = normalized_mutual_info_score(
-            self.diff_of_gaus(ref_arr).flatten(), self.diff_of_gaus(test_arr).flatten()
+        after_mi_score = mi_tiled(
+            self.dog(ref_arr), self.dog(test_arr), self.tile_size
         )
-        before_mi_score = normalized_mutual_info_score(
-            self.diff_of_gaus(ref_arr).flatten(), self.diff_of_gaus(init_arr).flatten()
+        before_mi_score = mi_tiled(
+            self.dog(ref_arr), self.dog(init_arr), self.tile_size
         )
         return after_mi_score, before_mi_score
 
@@ -177,12 +211,26 @@ class PyrReg:
         print("    MI score after:", mi_scores[0], "| MI score before:", mi_scores[1])
         return checks
 
-    def diff_of_gaus(
-        self, img: Image, low_sigma: int = 5, high_sigma: int = 9
-    ) -> Image:
+    def get_dog_sigmas(self, pyr_factor: int) -> Tuple[int, int]:
+        if pyr_factor > 16:
+            return 1, 2
+        else:
+            sigmas = {
+                1: (5, 9),
+                2: (4, 7),
+                4: (3, 5),
+                8: (2, 3),
+                16: (1, 2)
+            }
+        return sigmas[pyr_factor]
+
+    def dog(self, img: Image, low_sigma: int = 5, high_sigma: int = 9) -> Image:
+        """ Difference of Gaussian """
         if img.max() == 0:
             return img
         else:
+            low_sigma, high_sigma = self.get_dog_sigmas(self._this_pyr_factor)
+
             fimg = cv.normalize(img, None, 0, 1, cv.NORM_MINMAX, cv.CV_32F)
             kernel = (low_sigma * 4 * 2 + 1, low_sigma * 4 * 2 + 1)  # as in opencv
             ls = cv.GaussianBlur(
@@ -191,6 +239,6 @@ class PyrReg:
             hs = cv.GaussianBlur(
                 fimg, kernel, sigmaX=high_sigma, dst=None, sigmaY=high_sigma
             )
-            dog = hs - ls
+            diff_of_gaussians = hs - ls
             del hs, ls
-            return cv.normalize(dog, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
+            return cv.normalize(diff_of_gaussians, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
