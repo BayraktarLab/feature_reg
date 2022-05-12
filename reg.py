@@ -262,13 +262,13 @@ def main(
     ref_img_id: int,
     ref_channel: str,
     out_dir: str,
-    n_workers: int,
-    tile_size: int,
-    num_pyr_lvl: int,
-    num_iter: int,
-    stack: bool,
-    estimate_only: bool,
-    load_param: str,
+    n_workers: int = 1,
+    tile_size: int = 1000,
+    num_pyr_lvl: int = 3,
+    num_iter: int = 3,
+    stack: bool = False,
+    estimate_only: bool = False,
+    load_param: str = "none",
 ):
 
     if not os.path.exists(out_dir):
