@@ -219,9 +219,9 @@ class PyrReg:
         print(scale)
         if scale == (0, 0):
             return False
-        elif scale[0] > 3 or scale[1] > 3:
+        elif abs(scale[0]) > 3 or abs(scale[1]) > 3:
             return False
-        elif scale[0] < 0.3 or scale[1] < 0.3:
+        elif abs(scale[0]) < 0.3 or abs(scale[1]) < 0.3:
             return False
         else:
             return True
