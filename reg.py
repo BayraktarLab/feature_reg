@@ -59,8 +59,8 @@ def calculate_padding_size(bigger_shape, smaller_shape):
     diff = bigger_shape - smaller_shape
 
     if diff == 1:
-        dim1 = 1
-        dim2 = 0
+        dim1 = 0
+        dim2 = 1
     elif diff % 2 != 0:
         dim1 = int(diff // 2)
         dim2 = int((diff // 2) + 1)
